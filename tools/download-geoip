@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Download MaxMind GeoLite2 databases for SENTINEL
+#
+# Requires a free MaxMind account:
+#   1. Register at https://www.maxmind.com/en/geolite2/signup
+#   2. Generate a license key at https://www.maxmind.com/en/accounts/current/license-key
+#   3. Run: ./tools/download-geoip YOUR_LICENSE_KEY
+#
+# Downloads GeoLite2-City and GeoLite2-ASN databases.
+
+set -euo pipefail
+
+LICENSE_KEY="${1:-}"
+DEST_DIR="${2:-./data/geoip}"
+
+if [ -z "$LICENSE_KEY" ]; then
+    echo "Usage: download-geoip <maxmind-license-key> [dest-dir]"
+    echo ""
+    echo "Get a free license key at:"
+    echo "  https://www.maxmind.com/en/geolite2/signup"
+    echo ""
+    echo "SENTINEL works without GeoIP but cannot determine"
+    echo "country, ASN, or datacenter status for IP addresses."
+    exit 1
+fi
+
+mkdir -p "$DEST_DIR"
+
+echo "Downloading GeoLite2-City..."
+curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-City&license_key=${LICENSE_KEY}&suffix=tar.gz" | tar xz --strip-components=1 -C "$DEST_DIR" --include="*.mmdb"
+
+echo "Downloading GeoLite2-ASN..."
+curl -sL "https://download.maxmind.com/app/geoip_download?edition_id=GeoLite2-ASN&license_key=${LICENSE_KEY}&suffix=tar.gz" | tar xz --strip-components=1 -C "$DEST_DIR" --include="*.mmdb"
+
+echo ""
+ls -lh "$DEST_DIR"/*.mmdb 2>/dev/null && echo "" && echo "GeoIP databases ready. Set SENTINEL_GEOIP_PATH=$DEST_DIR" || echo "Download failed. Check your license key."

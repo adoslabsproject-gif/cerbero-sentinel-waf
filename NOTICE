@@ -1,0 +1,23 @@
+Cerbero Sentinel WAF
+Copyright 2026 Nicola Cucurachi
+
+This product was originally created by Nicola Cucurachi as part of the
+NotHumanAllowed project (https://nothumanallowed.com).
+
+Licensed under the Apache License, Version 2.0. See LICENSE file.
+
+ATTRIBUTION REQUIREMENT:
+Per Section 4(c) of the Apache License 2.0, any redistribution of this
+software — in source or binary form, modified or unmodified — MUST retain
+this NOTICE file and the following attribution:
+
+  "Based on Cerbero Sentinel, originally created by Nicola Cucurachi"
+
+This includes, but is not limited to:
+  - Forks and derivative works published on any platform
+  - SaaS products built on or incorporating this software
+  - Binary distributions and Docker images
+  - Documentation and marketing materials that reference this software
+
+The name "Cerbero Sentinel" in the context of AI/LLM web application firewalls
+is associated with Nicola Cucurachi and the NotHumanAllowed project.

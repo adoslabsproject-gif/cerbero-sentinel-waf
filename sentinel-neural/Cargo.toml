@@ -1,0 +1,20 @@
+[package]
+name = "sentinel-neural"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+sentinel-core = { path = "../sentinel-core" }
+tokio = { workspace = true }
+regex = { workspace = true }
+once_cell = { workspace = true }
+tracing = { workspace = true }
+base64 = "0.22"
+ort = { workspace = true }
+ndarray = { workspace = true }
+parking_lot = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

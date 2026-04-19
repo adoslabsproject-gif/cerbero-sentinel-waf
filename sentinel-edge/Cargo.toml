@@ -1,0 +1,19 @@
+[package]
+name = "sentinel-edge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+sentinel-core = { path = "../sentinel-core" }
+tokio = { workspace = true }
+dashmap = { workspace = true }
+tracing = { workspace = true }
+maxminddb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }

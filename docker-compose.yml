@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  sentinel:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      - SENTINEL_PORT=8080
+      - SENTINEL_LOG_LEVEL=info
+      - SENTINEL_MODELS_PATH=/opt/sentinel/models
+    volumes:
+      # Mount your ONNX models directory (optional — falls back to pattern-based detection)
+      - ./models:/opt/sentinel/models:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

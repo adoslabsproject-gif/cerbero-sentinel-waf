@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# SENTINEL Log Analyzer — parse and filter structured JSON logs
+#
+# Usage:
+#   sentinel-logs <logfile> [command]
+#
+# Commands:
+#   threats         Show all security escalations (default)
+#   bans            Show IP/agent bans
+#   critical        Show CRITICAL events only
+#   high            Show HIGH+ events
+#   ip <address>    Filter by IP address
+#   path <path>     Filter by request path
+#   stats           Summary statistics
+#   live            Tail logs in real-time (colored)
+#   top-ips         Top 20 IPs by threat count
+#   top-paths       Top 20 paths targeted
+#   timeline        Hourly threat distribution
+#
+# Examples:
+#   sentinel-logs /var/log/sentinel.log threats
+#   sentinel-logs /var/log/sentinel.log ip 203.0.113.1
+#   sentinel-logs /var/log/sentinel.log stats
+#   sentinel-logs /var/log/sentinel.log live
+
+set -euo pipefail
+
+LOG_FILE="${1:-/var/log/sentinel.log}"
+COMMAND="${2:-threats}"
+ARG="${3:-}"
+
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+if [ ! -f "$LOG_FILE" ] && [ "$COMMAND" != "live" ]; then
+    echo "Error: Log file not found: $LOG_FILE"
+    echo "Usage: sentinel-logs <logfile> [command]"
+    exit 1
+fi
+
+check_jq() {
+    if ! command -v jq &>/dev/null; then
+        echo "Error: jq is required. Install: apt install jq / brew install jq"
+        exit 1
+    fi
+}
+
+case "$COMMAND" in
+    threats)
+        check_jq
+        echo -e "${YELLOW}=== SENTINEL Threat Events ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.message == "Security escalation") | "\(.timestamp) [\(.fields.level)] \(.fields.ip) → \(.fields.path) (score: \(.fields.score)) flags: \(.fields.flags)"' 2>/dev/null | while read line; do
+            if echo "$line" | grep -q "CRITICAL"; then
+                echo -e "${RED}$line${NC}"
+            elif echo "$line" | grep -q "HIGH"; then
+                echo -e "${YELLOW}$line${NC}"
+            else
+                echo "$line"
+            fi
+        done
+        ;;
+
+    bans)
+        check_jq
+        echo -e "${RED}=== SENTINEL IP Bans ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.message == "IP banned") | "\(.timestamp) BANNED: \(.fields.ip) — \(.fields.reason) (duration: \(.fields.duration_secs)s)"' 2>/dev/null
+        ;;
+
+    critical)
+        check_jq
+        echo -e "${RED}=== CRITICAL Events ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.level == "ERROR") | "\(.timestamp) \(.fields.message) — IP: \(.fields.ip // "N/A") Path: \(.fields.path // "N/A") Score: \(.fields.score // "N/A")"' 2>/dev/null
+        ;;
+
+    high)
+        check_jq
+        echo -e "${YELLOW}=== HIGH+ Events ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.level == "WARN" or .level == "ERROR") | "\(.timestamp) [\(.level)] \(.fields.message) — IP: \(.fields.ip // "N/A") Path: \(.fields.path // "N/A")"' 2>/dev/null
+        ;;
+
+    ip)
+        check_jq
+        if [ -z "$ARG" ]; then echo "Usage: sentinel-logs <logfile> ip <address>"; exit 1; fi
+        echo -e "${CYAN}=== Events for IP: $ARG ===${NC}"
+        cat "$LOG_FILE" | jq -r "select(.fields.ip == \"$ARG\") | \"\(.timestamp) [\(.level)] \(.fields.message) — \(.fields.path // \"N/A\") score: \(.fields.score // \"N/A\")\"" 2>/dev/null
+        ;;
+
+    path)
+        check_jq
+        if [ -z "$ARG" ]; then echo "Usage: sentinel-logs <logfile> path <path>"; exit 1; fi
+        echo -e "${CYAN}=== Events for path: $ARG ===${NC}"
+        cat "$LOG_FILE" | jq -r "select(.fields.path != null and (.fields.path | contains(\"$ARG\"))) | \"\(.timestamp) [\(.level)] \(.fields.ip // \"N/A\") → \(.fields.path) score: \(.fields.score // \"N/A\")\"" 2>/dev/null
+        ;;
+
+    stats)
+        check_jq
+        echo -e "${GREEN}=== SENTINEL Statistics ===${NC}"
+        TOTAL=$(cat "$LOG_FILE" | wc -l)
+        THREATS=$(cat "$LOG_FILE" | jq -r 'select(.fields.message == "Security escalation")' 2>/dev/null | wc -l)
+        BANS=$(cat "$LOG_FILE" | jq -r 'select(.fields.message == "IP banned")' 2>/dev/null | wc -l)
+        CRITICAL=$(cat "$LOG_FILE" | jq -r 'select(.level == "ERROR")' 2>/dev/null | wc -l)
+        HIGH=$(cat "$LOG_FILE" | jq -r 'select(.level == "WARN")' 2>/dev/null | wc -l)
+
+        echo "  Total log entries:  $TOTAL"
+        echo "  Threat events:      $THREATS"
+        echo "  IP bans:            $BANS"
+        echo "  CRITICAL events:    $CRITICAL"
+        echo "  HIGH events:        $HIGH"
+        echo ""
+        echo -e "${CYAN}Top 10 flagged IPs:${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.ip != null) | .fields.ip' 2>/dev/null | sort | uniq -c | sort -rn | head -10 | while read count ip; do
+            echo "  $count  $ip"
+        done
+        echo ""
+        echo -e "${CYAN}Top 10 targeted paths:${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.path != null) | .fields.path' 2>/dev/null | sort | uniq -c | sort -rn | head -10 | while read count path; do
+            echo "  $count  $path"
+        done
+        ;;
+
+    top-ips)
+        check_jq
+        echo -e "${CYAN}=== Top 20 IPs by Threat Count ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.ip != null and (.level == "WARN" or .level == "ERROR")) | .fields.ip' 2>/dev/null | sort | uniq -c | sort -rn | head -20
+        ;;
+
+    top-paths)
+        check_jq
+        echo -e "${CYAN}=== Top 20 Targeted Paths ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.fields.path != null and (.level == "WARN" or .level == "ERROR")) | .fields.path' 2>/dev/null | sort | uniq -c | sort -rn | head -20
+        ;;
+
+    timeline)
+        check_jq
+        echo -e "${CYAN}=== Hourly Threat Distribution ===${NC}"
+        cat "$LOG_FILE" | jq -r 'select(.level == "WARN" or .level == "ERROR") | .timestamp' 2>/dev/null | cut -dT -f2 | cut -d: -f1 | sort | uniq -c | sort -k2 | while read count hour; do
+            BAR=$(printf '%*s' "$count" '' | tr ' ' '█')
+            echo "  ${hour}:00  ${count}  ${BAR}"
+        done
+        ;;
+
+    live)
+        echo -e "${GREEN}=== SENTINEL Live Monitor ===${NC}"
+        echo "Tailing $LOG_FILE..."
+        tail -f "$LOG_FILE" 2>/dev/null | while read line; do
+            LEVEL=$(echo "$line" | jq -r '.level // "INFO"' 2>/dev/null)
+            MSG=$(echo "$line" | jq -r '.fields.message // "—"' 2>/dev/null)
+            IP=$(echo "$line" | jq -r '.fields.ip // ""' 2>/dev/null)
+            SCORE=$(echo "$line" | jq -r '.fields.score // ""' 2>/dev/null)
+
+            case "$LEVEL" in
+                ERROR) echo -e "${RED}[CRITICAL] $MSG ${IP:+IP: $IP} ${SCORE:+score: $SCORE}${NC}" ;;
+                WARN)  echo -e "${YELLOW}[HIGH] $MSG ${IP:+IP: $IP} ${SCORE:+score: $SCORE}${NC}" ;;
+                INFO)  echo -e "${GREEN}[INFO] $MSG${NC}" ;;
+                *)     echo "$line" ;;
+            esac
+        done
+        ;;
+
+    *)
+        echo "SENTINEL Log Analyzer"
+        echo ""
+        echo "Usage: sentinel-logs <logfile> [command]"
+        echo ""
+        echo "Commands:"
+        echo "  threats         Show all security escalations (default)"
+        echo "  bans            Show IP/agent bans"
+        echo "  critical        Show CRITICAL events only"
+        echo "  high            Show HIGH+ events"
+        echo "  ip <address>    Filter by IP address"
+        echo "  path <path>     Filter by request path"
+        echo "  stats           Summary statistics"
+        echo "  live            Tail logs in real-time (colored)"
+        echo "  top-ips         Top 20 IPs by threat count"
+        echo "  top-paths       Top 20 paths targeted"
+        echo "  timeline        Hourly threat distribution"
+        ;;
+esac
