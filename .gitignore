@@ -4,5 +4,3 @@
 *.safetensors
 .env
 .DS_Store
-POST.md
-DESCRIPTION.md
