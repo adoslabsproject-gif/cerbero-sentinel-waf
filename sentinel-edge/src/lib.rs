@@ -11,6 +11,7 @@ pub mod rate_limiter;
 pub mod ip_intel;
 pub mod ddos;
 pub mod ban_store;
+pub mod honeypot;
 
 use sentinel_core::{Request, LayerRiskScore as RiskScore, RiskLevel, RiskFlag, SentinelError, EdgeConfig};
 use std::sync::Arc;
@@ -20,6 +21,7 @@ pub use rate_limiter::{RateLimiter, RateLimitResult};
 pub use ip_intel::{IpIntelligence, IpReputation, ThreatType};
 pub use ddos::{DDoSDetector, DDoSPattern};
 pub use ban_store::{BanStore, BanStoreConfig, BanEntry};
+pub use honeypot::{HoneypotDetector, HoneypotHit};
 
 /// Edge Shield - First line of defense
 pub struct EdgeShield {
