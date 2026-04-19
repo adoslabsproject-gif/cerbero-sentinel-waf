@@ -1,14 +1,16 @@
 # Cerbero Sentinel WAF
 
-**AI-native Web Application Firewall**
+**Web Application Firewall with AI-native defense layers**
 
-The first WAF designed specifically for AI agent ecosystems. Built in Rust for sub-15ms latency, zero-copy processing, and memory safety.
+A full WAF that protects any web application or API. Rate limiting, IP reputation, GeoIP, DDoS detection, ban management — everything a WAF should do. On top of that, it adds layers specifically designed for AI/LLM endpoints: prompt injection detection, toxicity analysis, per-agent behavioral profiling, and coordinated attack clustering.
+
+Built in Rust. 2-15ms latency. Single binary. Zero runtime dependencies.
 
 *Created by Nicola Cucurachi — [nothumanallowed.com](https://nothumanallowed.com)*
 
 ## Why Cerbero
 
-Traditional WAFs use regex patterns. Cerbero uses ML models, behavioral profiling, and semantic analysis — purpose-built for protecting LLM endpoints, agent APIs, and AI-powered services.
+Traditional WAFs protect websites. Cerbero protects websites AND the AI behind them.
 
 | Feature | Traditional WAFs | Cerbero |
 |---------|-----------------|----------|
@@ -66,13 +68,13 @@ cargo build --release
 ./target/release/sentinel-server
 
 # Custom port
-Cerbero_PORT=9090 ./target/release/sentinel-server
+SENTINEL_PORT=9090 ./target/release/sentinel-server
 
 # Debug logging
-Cerbero_LOG_LEVEL=debug ./target/release/sentinel-server
+SENTINEL_LOG_LEVEL=debug ./target/release/sentinel-server
 
 # With ML models
-Cerbero_MODELS_PATH=/path/to/models ./target/release/sentinel-server
+SENTINEL_MODELS_PATH=/path/to/models ./target/release/sentinel-server
 ```
 
 ### Docker
@@ -239,9 +241,9 @@ All configuration is via environment variables or code defaults:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `Cerbero_PORT` | `8080` | HTTP server port |
-| `Cerbero_LOG_LEVEL` | `warn` | Log level (trace/debug/info/warn/error) |
-| `Cerbero_MODELS_PATH` | `./models` | Path to ONNX ML models |
+| `SENTINEL_PORT` | `8080` | HTTP server port |
+| `SENTINEL_LOG_LEVEL` | `warn` | Log level (trace/debug/info/warn/error) |
+| `SENTINEL_MODELS_PATH` | `./models` | Path to ONNX ML models |
 
 Layer-specific settings can be customized in code via `SentinelConfig`:
 
@@ -254,25 +256,37 @@ config.behavior.anomaly_z_threshold = 3.0;
 config.response.ban_duration_secs = 86400;  // 24 hours
 ```
 
-## ML Models
+## Two Modes: Pattern-Based and ML-Enhanced
 
-Cerbero uses ONNX-quantized models for inference:
+Cerbero works in two modes:
 
-- **Prompt Injection**: DeBERTa-v3-small fine-tuned (INT8, ~50MB)
-- **Embeddings**: all-MiniLM-L6-v2 for semantic similarity (INT8, ~25MB)
-- **Toxicity**: Custom classifier (INT8, ~30MB)
+### Mode 1: Pattern-Based (default, zero setup)
 
-Without models, Cerbero falls back to pattern-based detection (still effective, just less accurate).
+Out of the box, Cerbero uses regex patterns and heuristics for detection. This catches the vast majority of attacks (prompt injection, encoding tricks, system prompt extraction) with zero additional dependencies. This is what you get when you just `cargo build && ./sentinel`.
 
-### Download models
+### Mode 2: ML-Enhanced (with ONNX models)
+
+For higher accuracy and fewer false positives, you can add ONNX models:
+
+- **Prompt Injection**: DeBERTa-v3-small fine-tuned (~65MB)
+- **Toxicity**: Binary classifier (~65MB)
+- **LLM Output Safety**: Detects compromised model responses (~65MB)
+- **Embeddings**: all-MiniLM-L6-v2 for semantic similarity (~87MB)
+- **Vocabulary**: WordPiece tokenizer (`vocab.txt`)
+
+Place models in a directory and set `SENTINEL_MODELS_PATH`:
 
 ```bash
-# Create models directory
 mkdir -p models
+# Download models from Hugging Face:
+#   - prompt-injection: https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2 (export to ONNX)
+#   - toxicity: any ONNX binary text classifier
+#   - vocab.txt: from any BERT/DeBERTa tokenizer
 
-# Models are available from Hugging Face (links TBD)
-# Or use the fallback pattern-based detection (no models needed)
+SENTINEL_MODELS_PATH=./models ./target/release/sentinel
 ```
+
+When models are found, Cerbero logs `"ONNX model loaded"` at startup. When not found, it logs a warning and falls back to pattern-based detection — no crash, no error.
 
 ## Crate Structure
 
