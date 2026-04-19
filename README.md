@@ -288,28 +288,75 @@ SENTINEL_MODELS_PATH=./models ./target/release/sentinel
 
 When models are found, Cerbero logs `"ONNX model loaded"` at startup. When not found, it logs a warning and falls back to pattern-based detection — no crash, no error.
 
-## Crate Structure
+## Honeypot System
+
+Built-in trap endpoints that catch scanners and attackers automatically. Any request to a honeypot path is flagged as malicious — no legitimate user would ever access these.
+
+**60+ default traps** including:
+- Admin panels: `/admin`, `/wp-admin`, `/phpmyadmin`, `/cpanel`
+- Sensitive files: `/.env`, `/.git/config`, `/wp-config.php`, `/debug.log`
+- API probes: `/graphql`, `/swagger.json`, `/actuator`, `/server-status`
+- File extensions: `.php`, `.asp`, `.bak`, `.sql`, `.log`
+
+**Fake responses** make traps convincing — `/.env` returns fake credentials, `/wp-login.php` returns a fake login form. Attackers waste time on decoys while you collect their fingerprints.
+
+Scoring: 1 hit = 0.7 (maybe accidental), 2 hits = 0.85 (unlikely), 3+ hits = 0.95 (scanner).
+
+## Training Pipeline
+
+Customize ML models for YOUR platform's specific attack patterns.
+
+```bash
+cd training/
+
+# 1. Download base models from Hugging Face
+python download_base_models.py
+
+# 2. Run Cerbero for a few weeks to collect attack data in logs
+
+# 3. Extract labeled training data from logs
+python collect_training_data.py --logs /path/to/sentinel.log --output data/
+
+# 4. Fine-tune on your data
+python train_prompt_injection.py --data data/ --output models/
+
+# 5. Export to ONNX for Cerbero
+python export_onnx.py --model models/prompt-injection --output ../models/
+
+# 6. Restart Cerbero — auto-detects new models
+```
+
+**Automated retraining** — set up a weekly cron job:
+```bash
+0 3 * * 0 cd /opt/sentinel/training && python retrain.py --logs /var/log/sentinel.log --models /opt/sentinel/models/
+```
+
+The retraining script handles everything: data collection, training, ONNX export, atomic model swap with backup.
+
+## Project Structure
 
 ```
-cerbero-waf/
+cerbero-sentinel-waf/
 ├── sentinel-core/       # Core types, traits, config
-├── sentinel-edge/       # Layer 1: Rate limiting, IP intel, DDoS
-├── sentinel-neural/     # Layer 2: ML-based prompt injection, toxicity
-├── sentinel-behavior/   # Layer 3: Agent profiling, anomaly detection
-├── sentinel-response/   # Layer 4: Adaptive response, bans, escalation
-├── sentinel-sandbox/    # WebAssembly sandbox for isolated processing
-├── sentinel-server/     # HTTP server (Axum) + metrics + API
+├── sentinel-edge/       # Layer 1: Rate limiting, IP intel, DDoS, honeypot, bans
+├── sentinel-neural/     # Layer 2: ML prompt injection, toxicity, encoding attacks
+├── sentinel-behavior/   # Layer 3: Agent profiling, anomaly, coordination detection
+├── sentinel-response/   # Layer 4: Adaptive response, challenges, escalation
+├── sentinel-server/     # HTTP server (Axum) + Prometheus metrics + REST API
+├── training/            # Python ML pipeline (download, train, export ONNX)
+├── tools/               # Log analyzer CLI + GeoIP download script
+├── Dockerfile           # Multi-stage Docker build
+├── docker-compose.yml
 └── Cargo.toml           # Workspace manifest
 ```
 
 ## Performance
 
-Benchmarked on a 4-core Hetzner AX41 (AMD Ryzen 5 3600):
-
 | Scenario | Latency (p50) | Latency (p99) | Throughput |
 |----------|--------------|--------------|------------|
 | Allow (clean request) | 0.8ms | 2.1ms | 12,000 req/s |
 | Block (prompt injection) | 3.2ms | 8.5ms | 4,000 req/s |
+| Honeypot trap | 0.1ms | 0.3ms | 50,000 req/s |
 | Full pipeline (all layers) | 5.1ms | 12.3ms | 2,500 req/s |
 
 ## License
@@ -322,4 +369,4 @@ Any fork or derivative work must retain the NOTICE file with original attributio
 
 **Nicola Cucurachi** — [nothumanallowed.com](https://nothumanallowed.com)
 
-Cerbero was created as the security layer for [NotHumanAllowed](https://nothumanallowed.com), an AI agent platform with 38 agents and 80 tools. After running in production for months, it was open-sourced as a standalone project.
+Cerbero Sentinel WAF was created as the security layer for [NotHumanAllowed](https://nothumanallowed.com), an AI agent platform with 38 agents and 80 tools. After running in production for months protecting real AI infrastructure, it was released as a standalone open-source project.
