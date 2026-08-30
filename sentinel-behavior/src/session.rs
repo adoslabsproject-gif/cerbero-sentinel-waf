@@ -5,12 +5,11 @@
 //! - Cookie manipulation
 //! - Fingerprint changes
 
+use sentinel_core::sharded_lru::ShardedLru;
 use sentinel_core::{BehaviorConfig, Request, SentinelError};
-use dashmap::DashMap;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::net::IpAddr;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Session risk assessment
@@ -34,7 +33,6 @@ struct SessionFingerprint {
     /// Accept-Language hash
     lang_hash: u64,
     /// First seen
-    #[allow(dead_code)]
     first_seen: Instant,
     /// Last seen
     last_seen: Instant,
@@ -91,8 +89,11 @@ impl SessionFingerprint {
 
 /// Session analyzer
 pub struct SessionAnalyzer {
-    /// Session fingerprints by session ID
-    sessions: Arc<DashMap<String, SessionFingerprint>>,
+    /// Session fingerprints by session ID. SESSION1 (anti-OOM/CPU-DoS): la chiave
+    /// è client-controlled → senza bound un attaccante riempie la mappa all'OOM.
+    /// `ShardedLru` la cappa con eviction LRU true-O(1) (no scan O(n) per-request,
+    /// classe DD1) e concorrenza sharded (no lock globale). Vedi sentinel-core.
+    sessions: ShardedLru<String, SessionFingerprint>,
     /// Configuration
     config: BehaviorConfig,
     /// Maximum session age
@@ -103,7 +104,7 @@ impl SessionAnalyzer {
     /// Create new session analyzer
     pub fn new(config: &BehaviorConfig) -> Result<Self, SentinelError> {
         Ok(Self {
-            sessions: Arc::new(DashMap::new()),
+            sessions: ShardedLru::new(config.session_max_entries.max(1)),
             config: config.clone(),
             max_age: Duration::from_secs(config.session_max_age_secs),
         })
@@ -111,6 +112,20 @@ impl SessionAnalyzer {
 
     /// Analyze session risk
     pub async fn analyze(&self, request: &Request) -> Result<SessionRisk, SentinelError> {
+        // Check if honeypot was triggered for this IP (server-computed, passed via header)
+        let honeypot_triggered = request.headers
+            .get("x-honeypot-triggered")
+            .map(|v| v == "true")
+            .unwrap_or(false);
+
+        if honeypot_triggered {
+            return Ok(SessionRisk {
+                score: 0.8,
+                is_suspicious: true,
+                reason: Some("IP has honeypot history (server-verified)".to_string()),
+            });
+        }
+
         let session_id = self.extract_session_id(request);
 
         let Some(session_id) = session_id else {
@@ -124,8 +139,9 @@ impl SessionAnalyzer {
 
         let current_fingerprint = SessionFingerprint::from_request(request);
 
-        // Check if session exists
-        if let Some(existing) = self.sessions.get(&session_id) {
+        // Check if session exists (peek: NO promote — la recency la guida record()).
+        let existing = self.sessions.with_peek(&session_id, |e| e.cloned());
+        if let Some(existing) = existing {
             let match_score = existing.matches(&current_fingerprint);
 
             // Check for fingerprint change (potential hijacking)
@@ -175,13 +191,17 @@ impl SessionAnalyzer {
 
         let fingerprint = SessionFingerprint::from_request(request);
 
-        self.sessions
-            .entry(session_id)
-            .and_modify(|existing| {
+        // SESSION1: upsert true-O(1). Se la key è NUOVA e lo shard è al cap, lo
+        // ShardedLru evicta la LRU in O(1) (niente scan O(n) per-request, classe
+        // DD1). Le key esistenti fanno solo update + promote della recency.
+        self.sessions.upsert(
+            session_id,
+            || fingerprint,
+            |existing| {
                 existing.last_seen = Instant::now();
                 existing.request_count += 1;
-            })
-            .or_insert(fingerprint);
+            },
+        );
     }
 
     /// Extract session ID from request
@@ -189,7 +209,10 @@ impl SessionAnalyzer {
         // Check Authorization header (JWT)
         if let Some(auth) = request.headers.get("authorization") {
             if auth.starts_with("Bearer ") {
-                // Hash the JWT to use as session ID
+                // Hash the JWT to use as session ID.
+                // SAFE-SLICE: guardato da starts_with("Bearer ") = 7 byte ASCII → garantisce
+                // sia len ≥ 7 (no out-of-range) sia che il byte 7 è un char-boundary (i primi
+                // 7 byte sono ASCII) → `&auth[7..]` non può panicare. (FP class non applicabile.)
                 let token = &auth[7..];
                 let mut hasher = DefaultHasher::new();
                 token.hash(&mut hasher);
@@ -203,7 +226,10 @@ impl SessionAnalyzer {
             for part in cookie.split(';') {
                 let part = part.trim();
                 if part.starts_with("session=") || part.starts_with("sid=") {
-                    return Some(format!("cookie:{}", &part[part.find('=').unwrap() + 1..]));
+                    // split_once: panic-free (niente .unwrap() su find né slice manuale).
+                    if let Some((_, val)) = part.split_once('=') {
+                        return Some(format!("cookie:{val}"));
+                    }
                 }
             }
         }
@@ -221,6 +247,7 @@ impl SessionAnalyzer {
         let now = Instant::now();
         self.sessions.retain(|_, session| {
             now.duration_since(session.last_seen) < self.max_age
+                && now.duration_since(session.first_seen) < self.max_age
         });
     }
 
@@ -305,5 +332,71 @@ mod tests {
         let risk = analyzer.analyze(&request2).await.unwrap();
         assert!(risk.is_suspicious);
         assert!(risk.reason.is_some());
+    }
+
+    // ── SESSION1: bounding anti-OOM DoS (mappa illimitata, chiave client-string) ──
+
+    fn create_analyzer_with_cap(cap: usize) -> SessionAnalyzer {
+        let config = BehaviorConfig { session_max_entries: cap, ..Default::default() };
+        SessionAnalyzer::new(&config).unwrap()
+    }
+
+    fn request_with_session(sid: &str) -> Request {
+        let mut headers = std::collections::HashMap::new();
+        headers.insert("x-session-id".to_string(), sid.to_string());
+        headers.insert("user-agent".to_string(), "TestAgent/1.0".to_string());
+        Request {
+            path: "/api/posts".to_string(),
+            client_ip: IpAddr::V4(Ipv4Addr::new(1, 2, 3, 4)),
+            headers,
+            ..Default::default()
+        }
+    }
+
+    /// 🚨 BUG-BOUNTY SESSION1: un flood di session id distinti NON deve far
+    /// crescere la mappa oltre il cap (senza fix sarebbero 10_000 entry → OOM).
+    #[tokio::test]
+    async fn test_session_map_bounded_under_id_flood() {
+        let analyzer = create_analyzer_with_cap(100);
+        for i in 0..10_000 {
+            analyzer.record(&request_with_session(&format!("flood-{i}"))).await;
+        }
+        assert!(
+            analyzer.session_count() <= analyzer.sessions.capacity(),
+            "mappa non bounded: count={} cap={}",
+            analyzer.session_count(),
+            analyzer.sessions.capacity()
+        );
+        assert!(analyzer.session_count() <= 100);
+    }
+
+    /// Update di una sessione ESISTENTE non fa crescere la mappa né evicta.
+    #[tokio::test]
+    async fn test_existing_session_updates_do_not_grow() {
+        let analyzer = create_analyzer_with_cap(3);
+        for _ in 0..50 {
+            analyzer.record(&request_with_session("same")).await;
+        }
+        assert_eq!(analyzer.session_count(), 1);
+    }
+
+    /// La semantica LRU true-O(1) (recency + eviction dell'oldest, O(1)) è
+    /// testata in modo deterministico nel primitivo `ShardedLru`
+    /// (single_shard_is_true_lru_recency). A livello session verifichiamo
+    /// l'INVARIANTE che conta: sotto churn continuo la mappa resta SEMPRE
+    /// bounded ad ogni step (mai overflow transitorio = niente CPU/OOM-DoS).
+    #[tokio::test]
+    async fn test_bounded_under_continuous_churn() {
+        let analyzer = create_analyzer_with_cap(160); // capacity = 16 * (160/16) = 160
+        let cap = analyzer.sessions.capacity();
+        for i in 0..5_000 {
+            analyzer.record(&request_with_session(&format!("c-{i}"))).await;
+            assert!(
+                analyzer.session_count() <= cap,
+                "overflow a i={i}: count={}",
+                analyzer.session_count()
+            );
+        }
+        assert!(analyzer.session_count() > 0, "non deve svuotarsi");
     }
 }

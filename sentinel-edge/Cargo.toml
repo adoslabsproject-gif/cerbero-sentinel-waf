@@ -8,12 +8,23 @@ authors.workspace = true
 [dependencies]
 sentinel-core = { path = "../sentinel-core" }
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
-maxminddb = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-rusqlite = { workspace = true }
+sha2 = "0.10"
+maxminddb = "0.27"
+once_cell = { workspace = true }
+regex = { workspace = true }
+# G2 (2026-06-02): atomic Arc swap per hot-reload CRS regex senza locks/restart
+arc-swap = "1.7"
+# G3 (2026-06-02): distributed rate-limit shared store via Redis
+redis = { version = "0.27", features = ["tokio-comp", "aio", "connection-manager"] }
+# notify: hot-reload TOR exit list quando il cron weekly aggiorna il file
+# /opt/zeliai/data/tor-exit-nodes.txt — fsevents propagation a runtime,
+# zero restart Sentinel.
+notify = "6.1"
 
 [dev-dependencies]
 tokio-test = { workspace = true }

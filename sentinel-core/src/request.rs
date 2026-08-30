@@ -59,6 +59,12 @@ pub struct Request {
     /// Additional context
     #[serde(default)]
     pub context: RequestContext,
+
+    /// Categoria logica del check (es. "llm_prompt"). Permette al response
+    /// handler di trattare diversamente il traffico LLM interno autenticato
+    /// (i prompt contengono codice/JSON → il content classifier li flaggerebbe).
+    #[serde(default)]
+    pub category: Option<String>,
 }
 
 fn default_uuid() -> Uuid {
@@ -90,6 +96,7 @@ impl Default for Request {
             agent_id: None,
             agent_name: None,
             context: RequestContext::default(),
+            category: None,
         }
     }
 }
@@ -112,6 +119,7 @@ impl Request {
             agent_id: None,
             agent_name: None,
             context: RequestContext::default(),
+            category: None,
         }
     }
 

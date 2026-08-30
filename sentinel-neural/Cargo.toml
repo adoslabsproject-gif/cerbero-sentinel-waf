@@ -7,14 +7,20 @@ authors.workspace = true
 
 [dependencies]
 sentinel-core = { path = "../sentinel-core" }
+serde = { workspace = true }
 tokio = { workspace = true }
 regex = { workspace = true }
 once_cell = { workspace = true }
 tracing = { workspace = true }
 base64 = "0.22"
+# N11 audit (2026-05-29): SHA-256 + constant-time compare per ONNX model
+# integrity verification (anti-tamper). Pinned a versioni stabili.
+sha2 = "0.10"
+subtle = "2"
 ort = { workspace = true }
 ndarray = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+serde_json = { workspace = true }

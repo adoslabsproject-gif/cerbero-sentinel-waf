@@ -1,6 +1,15 @@
 /target
+# Modelli e pesi — provisionati sul server, mai in git
 *.onnx
 *.bin
 *.safetensors
+# Database GeoIP MaxMind — licenza vieta la redistribuzione
+*.mmdb
+geoip/
+models/
+# Segreti e stato locale
 .env
+/state
+sentinel.sqlite
+# Sistema
 .DS_Store

@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Action Engine
 //!
 //! Determines and records enforcement actions.
@@ -32,9 +31,9 @@ struct ActionStats {
 /// Action history entry
 #[derive(Debug, Clone)]
 pub struct ActionEntry {
-    action: Action,
-    risk_score: f64,
-    timestamp: Instant,
+    pub action: Action,
+    pub risk_score: f64,
+    pub timestamp: Instant,
 }
 
 /// Action engine for determining and tracking enforcement

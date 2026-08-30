@@ -5,10 +5,26 @@
 //! - Temporal pattern analysis
 //! - Sequence anomaly detection
 
+use crate::anomaly_baseline::{tenant_key_from_host, BaselineSnapshot, BaselineStore, BASELINE_DIMENSIONS};
 use sentinel_core::{BehaviorConfig, Request, SentinelError};
 use std::collections::VecDeque;
-use std::sync::RwLock;
+use parking_lot::RwLock;
 use std::time::{Duration, Instant};
+
+/// Campioni minimi prima che una baseline tenant produca z-score (anti cold-start FP).
+const ANOMALY_MIN_SAMPLES: u64 = 100;
+/// Cap tenant tracciati nella baseline (oltre → bucket globale). Anti memory-blow.
+const ANOMALY_MAX_TENANTS: usize = 4096;
+
+/// Estrae la chiave-tenant dalle header di una request (Host, case-insensitive).
+fn tenant_of(request: &Request) -> String {
+    let host = request
+        .headers
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("host"))
+        .map(|(_, v)| v.as_str());
+    tenant_key_from_host(host)
+}
 
 /// Types of anomalies
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,64 +99,15 @@ impl RequestFeatures {
     }
 }
 
-/// Running statistics for anomaly detection
-#[derive(Debug, Clone)]
-struct RunningStats {
-    count: u64,
-    mean: Vec<f64>,
-    m2: Vec<f64>, // For variance calculation
-    min: Vec<f64>,
-    max: Vec<f64>,
-}
-
-impl RunningStats {
-    fn new(dimensions: usize) -> Self {
-        Self {
-            count: 0,
-            mean: vec![0.0; dimensions],
-            m2: vec![0.0; dimensions],
-            min: vec![f64::MAX; dimensions],
-            max: vec![f64::MIN; dimensions],
-        }
-    }
-
-    fn update(&mut self, values: &[f64]) {
-        self.count += 1;
-        let n = self.count as f64;
-
-        for i in 0..values.len() {
-            let delta = values[i] - self.mean[i];
-            self.mean[i] += delta / n;
-            let delta2 = values[i] - self.mean[i];
-            self.m2[i] += delta * delta2;
-
-            self.min[i] = self.min[i].min(values[i]);
-            self.max[i] = self.max[i].max(values[i]);
-        }
-    }
-
-    fn std_dev(&self) -> Vec<f64> {
-        if self.count < 2 {
-            return vec![1.0; self.mean.len()];
-        }
-        self.m2.iter().map(|m| (m / (self.count as f64 - 1.0)).sqrt()).collect()
-    }
-
-    fn z_score(&self, values: &[f64]) -> Vec<f64> {
-        let std_dev = self.std_dev();
-        values
-            .iter()
-            .zip(self.mean.iter())
-            .zip(std_dev.iter())
-            .map(|((v, m), s)| if *s > 0.0 { (v - m) / s } else { 0.0 })
-            .collect()
-    }
-}
+// NB: la baseline statistica (Welford) vive ora in `anomaly_baseline.rs` (Welford +
+// BaselineStore segmentato/persistibile) — SSOT unica, niente più la RunningStats
+// duplicata globale-e-volatile che stava qui.
 
 /// Anomaly detector
 pub struct AnomalyDetector {
-    /// Running statistics
-    stats: RwLock<RunningStats>,
+    /// Baseline statistica per-tenant, persistibile (Welford segmentato). Sostituisce
+    /// la vecchia RunningStats globale-e-volatile.
+    baseline: BaselineStore,
     /// Recent requests for sequence analysis
     recent_requests: RwLock<VecDeque<RequestFeatures>>,
     /// Request intervals for temporal analysis
@@ -155,7 +122,7 @@ impl AnomalyDetector {
     /// Create new anomaly detector
     pub fn new(config: &BehaviorConfig) -> Result<Self, SentinelError> {
         Ok(Self {
-            stats: RwLock::new(RunningStats::new(5)),
+            baseline: BaselineStore::new(BASELINE_DIMENSIONS, ANOMALY_MAX_TENANTS),
             recent_requests: RwLock::new(VecDeque::with_capacity(1000)),
             request_intervals: RwLock::new(VecDeque::with_capacity(100)),
             last_request: RwLock::new(None),
@@ -166,10 +133,13 @@ impl AnomalyDetector {
     /// Detect anomalies in a request
     pub async fn detect(&self, request: &Request) -> Result<Vec<AnomalyType>, SentinelError> {
         let mut anomalies = Vec::new();
+        let tenant = tenant_of(request);
         let features = RequestFeatures::from_request(request);
+        let vector = features.to_vector();
 
-        // Statistical outlier detection
-        if self.is_statistical_outlier(&features) {
+        // Statistical outlier vs baseline DEL TENANT — valutato PRIMA di osservare
+        // (così la richiesta corrente non smorza la propria anomalia).
+        if self.is_statistical_outlier(&tenant, &vector) {
             anomalies.push(AnomalyType::StatisticalOutlier);
         }
 
@@ -183,38 +153,32 @@ impl AnomalyDetector {
             anomalies.push(AnomalyType::SequenceAnomaly);
         }
 
-        // Update statistics for learning
-        self.update_stats(&features);
+        // Learning: aggiorna la baseline del tenant + le finestre temporali/sequenza.
+        self.baseline.observe(&tenant, &vector);
+        self.update_windows(&features);
 
         Ok(anomalies)
     }
 
-    /// Check if request is statistical outlier
-    fn is_statistical_outlier(&self, features: &RequestFeatures) -> bool {
-        let stats = self.stats.read().unwrap();
-
-        // Need enough data for meaningful stats
-        if stats.count < 100 {
-            return false;
+    /// Check if request is a statistical outlier RISPETTO ALLA BASELINE DEL TENANT.
+    /// `None` (baseline non ancora warm) → niente flag: evita falsi positivi a freddo.
+    fn is_statistical_outlier(&self, tenant: &str, vector: &[f64]) -> bool {
+        match self.baseline.z_score(tenant, vector, ANOMALY_MIN_SAMPLES) {
+            Some(z_scores) => z_scores.iter().any(|z| z.abs() > self.config.anomaly_z_threshold),
+            None => false,
         }
-
-        let vector = features.to_vector();
-        let z_scores = stats.z_score(&vector);
-
-        // Check if any dimension exceeds threshold (typically 3 std devs)
-        z_scores.iter().any(|z| z.abs() > self.config.anomaly_z_threshold)
     }
 
     /// Check for temporal anomalies
     fn is_temporal_anomaly(&self, features: &RequestFeatures) -> bool {
-        let intervals = self.request_intervals.read().unwrap();
+        let intervals = self.request_intervals.read();
 
         if intervals.len() < 10 {
             return false;
         }
 
         // Check request interval
-        if let Some(last) = *self.last_request.read().unwrap() {
+        if let Some(last) = *self.last_request.read() {
             let interval = features.timestamp.duration_since(last);
 
             // Calculate mean interval
@@ -236,7 +200,7 @@ impl AnomalyDetector {
 
     /// Check for sequence anomalies
     fn is_sequence_anomaly(&self, features: &RequestFeatures) -> bool {
-        let recent = self.recent_requests.read().unwrap();
+        let recent = self.recent_requests.read();
 
         if recent.len() < 5 {
             return false;
@@ -262,17 +226,33 @@ impl AnomalyDetector {
         false
     }
 
-    /// Update statistics with new request
-    fn update_stats(&self, features: &RequestFeatures) {
-        // Update running stats
-        {
-            let mut stats = self.stats.write().unwrap();
-            stats.update(&features.to_vector());
-        }
+    /// Snapshot INCREMENTALE delle baseline tenant modificate dall'ultimo flush
+    /// (il server le invia al Portal per la persistenza). At-least-once.
+    pub fn baseline_snapshot_dirty(&self) -> Vec<BaselineSnapshot> {
+        self.baseline.drain_dirty()
+    }
 
+    /// Snapshot COMPLETO di tutte le baseline (flush full periodico / shutdown).
+    pub fn baseline_snapshot_all(&self) -> Vec<BaselineSnapshot> {
+        self.baseline.snapshot_all()
+    }
+
+    /// Restore al boot dalle baseline persistite → niente cold-start a freddo dopo i restart.
+    pub fn restore_baseline(&self, snapshots: Vec<BaselineSnapshot>) {
+        self.baseline.restore(snapshots);
+    }
+
+    /// Numero di tenant con baseline tracciata (diagnostica / test).
+    pub fn baseline_tenant_count(&self) -> usize {
+        self.baseline.tenant_count()
+    }
+
+    /// Aggiorna SOLO le finestre temporali/sequenza. La baseline statistica del tenant
+    /// è aggiornata a parte (self.baseline.observe in detect).
+    fn update_windows(&self, features: &RequestFeatures) {
         // Update recent requests
         {
-            let mut recent = self.recent_requests.write().unwrap();
+            let mut recent = self.recent_requests.write();
             recent.push_back(features.clone());
             if recent.len() > 1000 {
                 recent.pop_front();
@@ -281,8 +261,8 @@ impl AnomalyDetector {
 
         // Update intervals
         {
-            let mut intervals = self.request_intervals.write().unwrap();
-            let mut last = self.last_request.write().unwrap();
+            let mut intervals = self.request_intervals.write();
+            let mut last = self.last_request.write();
 
             if let Some(last_time) = *last {
                 let interval = features.timestamp.duration_since(last_time);
@@ -334,8 +314,10 @@ mod tests {
             let _ = detector.detect(&request).await;
         }
 
-        // Stats should be updated
-        let stats = detector.stats.read().unwrap();
-        assert!(stats.count >= 50);
+        // La baseline del tenant (qui bucket globale: request senza Host) ha imparato.
+        let snaps = detector.baseline_snapshot_all();
+        let global = snaps.iter().find(|s| s.tenant == crate::anomaly_baseline::GLOBAL_BUCKET)
+            .expect("baseline globale presente dopo 50 richieste");
+        assert!(global.stats.count >= 50, "count atteso >=50, got {}", global.stats.count);
     }
 }

@@ -281,6 +281,69 @@ pub enum RiskFlag {
     CoordinatedBotnet,
     DistributedProbing,
     SybilAttack,
+
+    // Web Attacks (detected by web_attacks.rs RegexSet)
+    WebSqlInjection,
+    WebXss,
+    WebPathTraversal,
+    WebCommandInjection,
+    WebXxe,
+    WebSsrf,
+    WebSsti,
+    WebNoSqlInjection,
+    WebLog4Shell,
+    WebOpenRedirect,
+    WebPrototypePollution,
+    WebLdapInjection,
+    // v2.0.0 new web attack categories
+    WebJwtAttack,
+    WebHttpSmuggling,
+    WebCachePoisoning,
+    WebGraphqlAttack,
+    WebCrlfInjection,
+    WebHostHeaderAttack,
+    WebCspBypass,
+    WebCorsAttack,
+    WebWebsocketAttack,
+    WebDnsRebinding,
+    WebFileUploadAttack,
+
+    // Encoding Bypass (detected by encoding.rs normalize_comprehensive)
+    UrlEncodedPayload,
+    DoubleUrlEncoding,
+    HtmlEntityEncoding,
+    NullByteInjection,
+    OverlongUtf8,
+    MixedEncoding,
+    CommentInsertion,
+    CaseMutationEncoding,
+
+    // Honeypot
+    HoneypotTriggered,
+
+    // v2.0.0 Identity Graph
+    IdentityTracked,
+    WeakAssociation,
+    IdentityChurn,
+
+    // v2.0.0 Intent Detection
+    IntentReconnaissance,
+    IntentCredentialStuffing,
+    IntentDataExfiltration,
+    IntentVulnerabilityProbe,
+    IntentApiEnumeration,
+    IntentContentScraping,
+    IntentChainBonus,
+
+    // v2.0.0 Cross-IP Correlation
+    CrossIpCoordinated,
+    CrossIpSlowDrip,
+    CrossIpSlowDistributed,
+
+    // v2.0.0 JA3 TLS Fingerprinting
+    Ja3Mismatch,
+    Ja3Scanner,
+    Ja3Unknown,
 }
 
 /// Simplified RiskScore for layer outputs
@@ -313,9 +376,31 @@ impl LayerRiskScore {
         total.min(1.0)
     }
 
-    /// Update risk level based on scores
+    /// Update risk level based on scores.
+    ///
+    /// FIX 2026-06-02 (behavioral escape hatch): la weighted formula puniva
+    /// gli alert single-layer — un behavioral=1.0 dava solo total=0.3 (Low),
+    /// quindi le 5 rules behavioral non potevano scatenare ban da sole.
+    ///
+    /// Nuovo: se ANY layer (edge|neural|behavioral) raggiunge soglia "strong"
+    /// (>= 0.8), forziamo level ad almeno High. Se >= 0.95 → Critical.
+    /// Mantiene weighted average per "soft" multi-layer signals + escape
+    /// per "strong" single-layer detection (anti-coordinated attack, anti-spoof).
     pub fn update_level(&mut self) {
         let total = self.total_score();
+        let max_single = self.edge_score.max(self.neural_score).max(self.behavioral_score);
+
+        // Single-layer strong-signal override
+        if max_single >= 0.95 {
+            self.level = RiskLevel::Critical;
+            return;
+        }
+        if max_single >= 0.8 {
+            self.level = RiskLevel::High;
+            return;
+        }
+
+        // Standard weighted level
         self.level = if total >= 0.8 {
             RiskLevel::Critical
         } else if total >= 0.6 {
@@ -335,5 +420,103 @@ impl RiskScore {
     /// Create default risk score
     pub fn default_layer() -> LayerRiskScore {
         LayerRiskScore::default()
+    }
+}
+
+// ─── TESTS 2026-grade ───────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests_risk_levels {
+    use super::*;
+
+    fn s(edge: f64, neural: f64, behavioral: f64) -> LayerRiskScore {
+        let mut r = LayerRiskScore::default();
+        r.edge_score = edge;
+        r.neural_score = neural;
+        r.behavioral_score = behavioral;
+        r.update_level();
+        r
+    }
+
+    // ─── Weighted formula sanity ─────────────────────────────────────────
+    #[test]
+    fn weighted_all_zero_no_level() {
+        assert_eq!(s(0.0, 0.0, 0.0).level, RiskLevel::None);
+    }
+
+    #[test]
+    fn weighted_neural_dominates() {
+        // edge=0, neural=0.5, behavioral=0 → total = 0.5*0.5 = 0.25 → Low
+        assert_eq!(s(0.0, 0.5, 0.0).level, RiskLevel::Low);
+    }
+
+    // ─── FIX 2026-06-02: behavioral escape hatch ────────────────────────
+    #[test]
+    fn behavioral_alone_strong_signal_forces_high() {
+        // PRE-FIX: behavioral=1.0 → total=0.3 → Low (bug, mai banned)
+        // POST-FIX: behavioral >= 0.8 → forza High direttamente
+        assert_eq!(s(0.0, 0.0, 0.85).level, RiskLevel::High);
+    }
+
+    #[test]
+    fn behavioral_alone_critical_signal_forces_critical() {
+        assert_eq!(s(0.0, 0.0, 0.97).level, RiskLevel::Critical);
+    }
+
+    #[test]
+    fn edge_alone_strong_signal_forces_high() {
+        assert_eq!(s(0.85, 0.0, 0.0).level, RiskLevel::High);
+    }
+
+    #[test]
+    fn neural_alone_strong_signal_forces_high() {
+        // neural=0.85 → weighted total=0.425 (Medium) MA override → High
+        assert_eq!(s(0.0, 0.85, 0.0).level, RiskLevel::High);
+    }
+
+    #[test]
+    fn weak_signals_below_threshold_stay_weighted() {
+        // edge=0.5, neural=0.5, behavioral=0.5 → tutti < 0.8 → weighted total
+        // = 0.1 + 0.25 + 0.15 = 0.5 → Medium (no override)
+        assert_eq!(s(0.5, 0.5, 0.5).level, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn boundary_at_exactly_0_8_triggers_high() {
+        assert_eq!(s(0.0, 0.0, 0.8).level, RiskLevel::High);
+    }
+
+    #[test]
+    fn boundary_at_exactly_0_95_triggers_critical() {
+        assert_eq!(s(0.0, 0.0, 0.95).level, RiskLevel::Critical);
+    }
+
+    #[test]
+    fn just_below_threshold_falls_back_to_weighted() {
+        // behavioral=0.79 → no override, weighted total = 0.79*0.3 = 0.237 → Low
+        assert_eq!(s(0.0, 0.0, 0.79).level, RiskLevel::Low);
+    }
+
+    // ─── Regression: weighted multi-layer still works ─────────────────────
+    #[test]
+    fn weighted_medium_signals_multi_layer() {
+        // edge=0.5, neural=0.6, behavioral=0.5 → 0.1 + 0.3 + 0.15 = 0.55 → Medium
+        assert_eq!(s(0.5, 0.6, 0.5).level, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn weighted_high_via_neural_heavy() {
+        // neural=0.85 → override fires (>= 0.8) → High (not just weighted Medium)
+        assert_eq!(s(0.0, 0.85, 0.0).level, RiskLevel::High);
+    }
+
+    // ─── REGRESSION: pre-fix bug ──────────────────────────────────────────
+    #[test]
+    fn regression_behavioral_full_no_more_silent() {
+        // Pre-fix questo era RiskLevel::Low (bug — behavioral 1.0 ignorato)
+        // Post-fix DEVE essere Critical
+        let r = s(0.0, 0.0, 1.0);
+        assert_ne!(r.level, RiskLevel::Low, "REGRESSION: behavioral=1.0 ancora silente");
+        assert_ne!(r.level, RiskLevel::None);
+        assert_eq!(r.level, RiskLevel::Critical);
     }
 }

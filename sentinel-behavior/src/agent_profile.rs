@@ -9,6 +9,12 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Cap HARD del deque request_times per-agente (anti-OOM, classe EL1-B).
+const MAX_REQUEST_TIMES: usize = 4096;
+/// Cap HARD del numero di endpoint DISTINTI per-agente (anti-OOM): il path è
+/// attacker-controlled. La detection usa i top-N endpoint → cap ≫ N non la altera.
+const MAX_DISTINCT_ENDPOINTS: usize = 1024;
+
 /// Result of agent behavior analysis
 #[derive(Debug, Clone)]
 pub struct AgentBehavior {
@@ -81,9 +87,18 @@ impl AgentProfile {
                 break;
             }
         }
+        // Cap HARD (EL1-B): il time-prune non bounda il COUNT sotto flood ad alto rate.
+        while self.request_times.len() > MAX_REQUEST_TIMES {
+            self.request_times.pop_front();
+        }
 
-        // Record endpoint
-        *self.endpoint_counts.entry(endpoint.to_string()).or_insert(0) += 1;
+        // Record endpoint. Cap HARD del numero di endpoint DISTINTI tracciati: il path è
+        // attacker-controlled → senza cap un flood di path sempre diversi gonfia la mappa.
+        if self.endpoint_counts.contains_key(endpoint)
+            || self.endpoint_counts.len() < MAX_DISTINCT_ENDPOINTS
+        {
+            *self.endpoint_counts.entry(endpoint.to_string()).or_insert(0) += 1;
+        }
     }
 
     fn get_request_count(&self) -> usize {

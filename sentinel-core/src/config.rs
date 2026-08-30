@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-
 /// Behavioral layer (Layer 3) configuration - Extended
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BehaviorConfig {
@@ -44,6 +43,13 @@ pub struct BehaviorConfig {
 
     /// Fingerprint match threshold
     pub fingerprint_match_threshold: f64,
+
+    /// Max session fingerprints tracked simultaneously (hard cap, anti-OOM DoS).
+    /// La chiave è il session id fornito dal client → senza cap un attaccante
+    /// può riempire la mappa con id sempre diversi fino all'OOM (SESSION1).
+    /// Al superamento si droppa una BATCH (~10% più vecchie per last_seen),
+    /// ammortizzata su molti insert → niente scan O(n) per-request (no CPU-DoS).
+    pub session_max_entries: usize,
 }
 
 impl Default for BehaviorConfig {
@@ -62,6 +68,7 @@ impl Default for BehaviorConfig {
             sybil_signature_threshold: 20,
             session_max_age_secs: 86400, // 24 hours
             fingerprint_match_threshold: 0.7,
+            session_max_entries: 100_000, // ~decine di MB max; oltre → eviction LRU
         }
     }
 }

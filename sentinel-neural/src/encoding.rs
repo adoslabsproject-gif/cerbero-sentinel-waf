@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 //! Encoding Attack Detection
 //!
 //! Detects obfuscation attempts using encoding tricks:
@@ -7,6 +6,13 @@
 //! - Invisible characters
 //! - Control characters
 //! - RTL override attacks
+//! - URL encoding evasion (single + double)
+//! - HTML entity encoding
+//! - Null byte injection
+//! - Overlong UTF-8
+//! - Mixed encoding
+//! - Comment insertion (SQL/JS)
+//! - Case mutation with encoding
 
 use regex::Regex;
 use once_cell::sync::Lazy;
@@ -24,12 +30,65 @@ pub enum EncodingAttack {
     ControlCharacters,
     /// Right-to-left override attacks
     RtlOverride,
+    /// URL encoding used to hide payload (e.g., %3Cscript%3E)
+    UrlEncodedPayload,
+    /// Double URL encoding (e.g., %253Cscript%253E)
+    DoubleUrlEncoding,
+    /// HTML entity encoding (e.g., &#60;script&#62;)
+    HtmlEntityEncoding,
+    /// Null byte injection (%00, \0)
+    NullByteInjection,
+    /// Overlong UTF-8 sequences (e.g., 0xC0 0xAF for '/')
+    OverlongUtf8,
+    /// Multiple encoding types combined
+    MixedEncoding,
+    /// Comment insertion to split keywords (e.g., SEL/**/ECT)
+    CommentInsertion,
+    /// Case mutation with encoding tricks
+    CaseMutationEncoding,
+}
+
+/// Result of comprehensive normalization (ANALYSIS ONLY — never modifies original)
+#[derive(Debug, Clone)]
+pub struct NormalizedContent {
+    /// Content normalized: URL decoded, HTML decoded, lowercase, whitespace collapsed
+    pub normalized: String,
+    /// Content with SQL/JS comments removed (separate version for pattern matching)
+    pub comment_stripped: String,
+    /// Flag: contained suspicious comments (/* */, --)
+    pub had_comments: bool,
+    /// Number of URL decoding levels needed (0=none, 2+=suspicious)
+    pub url_decode_depth: u8,
 }
 
 /// Patterns for encoding detection
 static BASE64_PATTERN: Lazy<Regex> = Lazy::new(|| {
-    // Matches potential base64 strings (at least 20 chars, valid chars, multiple of 4 or with padding)
     Regex::new(r"[A-Za-z0-9+/]{20,}={0,2}").unwrap()
+});
+
+/// URL-encoded payload patterns (percent-encoded chars that form attack payloads)
+static URL_ENCODED_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(%3[cC]|%3[eE]|%22|%27|%28|%29|%2[fF]|%5[cC]|%0[aAdD])").unwrap()
+});
+
+/// Double URL encoding pattern
+static DOUBLE_URL_ENCODED_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)%25[0-9a-fA-F]{2}").unwrap()
+});
+
+/// HTML entity patterns (numeric + named)
+static HTML_ENTITY_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(&#x?[0-9a-fA-F]{1,6};|&(?:lt|gt|amp|quot|apos|tab|newline|sol|bsol|lpar|rpar|lcub|rcub);)").unwrap()
+});
+
+/// Null byte pattern
+static NULL_BYTE_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)(%00|\\0|\\x00|\x00)").unwrap()
+});
+
+/// SQL/JS comment patterns (potential comment insertion attack: SEL/**/ECT)
+static COMMENT_PATTERN: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|/\*.*?\*/|--\s)").unwrap()
 });
 
 /// Known homoglyph characters (Unicode that looks like ASCII)
@@ -109,18 +168,30 @@ const RTL_CHARS: &[char] = &[
     '\u{2069}', // Pop Directional Isolate
 ];
 
+/// Named HTML entities to their character equivalents
+const HTML_NAMED_ENTITIES: &[(&str, char)] = &[
+    ("&lt;", '<'),
+    ("&gt;", '>'),
+    ("&amp;", '&'),
+    ("&quot;", '"'),
+    ("&apos;", '\''),
+    ("&tab;", '\t'),
+    ("&newline;", '\n'),
+    ("&sol;", '/'),
+    ("&bsol;", '\\'),
+    ("&lpar;", '('),
+    ("&rpar;", ')'),
+    ("&lcub;", '{'),
+    ("&rcub;", '}'),
+];
+
 /// Encoding attack detector
-pub struct EncodingDetector {
-    /// Whether to decode and check base64
-    check_base64_content: bool,
-}
+pub struct EncodingDetector {}
 
 impl EncodingDetector {
     /// Create a new detector
     pub fn new() -> Self {
-        Self {
-            check_base64_content: true,
-        }
+        Self {}
     }
 
     /// Detect encoding attacks in content
@@ -152,6 +223,48 @@ impl EncodingDetector {
             attacks.push(EncodingAttack::RtlOverride);
         }
 
+        // Check for URL encoded payloads
+        if URL_ENCODED_PATTERN.is_match(content) {
+            attacks.push(EncodingAttack::UrlEncodedPayload);
+        }
+
+        // Check for double URL encoding
+        if DOUBLE_URL_ENCODED_PATTERN.is_match(content) {
+            attacks.push(EncodingAttack::DoubleUrlEncoding);
+        }
+
+        // Check for HTML entity encoding
+        if HTML_ENTITY_PATTERN.is_match(content) {
+            attacks.push(EncodingAttack::HtmlEntityEncoding);
+        }
+
+        // Check for null bytes
+        if NULL_BYTE_PATTERN.is_match(content) {
+            attacks.push(EncodingAttack::NullByteInjection);
+        }
+
+        // Check for overlong UTF-8 (bytes that shouldn't appear in valid UTF-8)
+        if self.detect_overlong_utf8(content) {
+            attacks.push(EncodingAttack::OverlongUtf8);
+        }
+
+        // Check for comment insertion
+        if COMMENT_PATTERN.is_match(content) {
+            attacks.push(EncodingAttack::CommentInsertion);
+        }
+
+        // Mixed encoding: multiple encoding types detected simultaneously
+        let encoding_count = [
+            URL_ENCODED_PATTERN.is_match(content),
+            HTML_ENTITY_PATTERN.is_match(content),
+            self.detect_homoglyphs(content),
+            DOUBLE_URL_ENCODED_PATTERN.is_match(content),
+        ].iter().filter(|&&v| v).count();
+
+        if encoding_count >= 2 {
+            attacks.push(EncodingAttack::MixedEncoding);
+        }
+
         attacks
     }
 
@@ -159,10 +272,7 @@ impl EncodingDetector {
     fn detect_base64_obfuscation(&self, content: &str) -> bool {
         for capture in BASE64_PATTERN.find_iter(content) {
             let potential_b64 = capture.as_str();
-
-            // Try to decode
             if let Ok(decoded) = base64_decode(potential_b64) {
-                // Check if decoded content looks suspicious
                 if self.is_suspicious_decoded(&decoded) {
                     return true;
                 }
@@ -174,8 +284,6 @@ impl EncodingDetector {
     /// Check if decoded base64 content is suspicious
     fn is_suspicious_decoded(&self, decoded: &str) -> bool {
         let lower = decoded.to_lowercase();
-
-        // Check for common injection patterns in decoded content
         lower.contains("ignore") && lower.contains("instruction")
             || lower.contains("system")
             || lower.contains("prompt")
@@ -227,7 +335,21 @@ impl EncodingDetector {
         false
     }
 
-    /// Normalize content by removing encoding attacks
+    /// Detect overlong UTF-8 sequences.
+    /// In Rust, strings are always valid UTF-8, but we can detect patterns that
+    /// indicate someone tried to use overlong encoding (e.g., 0xC0 0xAF byte sequences
+    /// in URL-encoded form: %c0%af for '/').
+    fn detect_overlong_utf8(&self, content: &str) -> bool {
+        // Check for URL-encoded overlong UTF-8 patterns
+        // %c0%af = overlong encoding of '/' (U+002F)
+        // %c0%ae = overlong encoding of '.' (U+002E)
+        // %c1%9c = overlong encoding of '\' (U+005C)
+        let lower = content.to_lowercase();
+        lower.contains("%c0%af") || lower.contains("%c0%ae") || lower.contains("%c1%9c")
+            || lower.contains("%c0%2f") || lower.contains("%e0%80%af")
+    }
+
+    /// Normalize content by removing encoding attacks (basic — invisible + homoglyphs)
     pub fn normalize(&self, content: &str) -> String {
         let mut result = String::with_capacity(content.len());
 
@@ -259,12 +381,163 @@ impl EncodingDetector {
 
         result
     }
+
+    /// Comprehensive normalization pipeline (ANALYSIS ONLY — never modifies original request).
+    ///
+    /// Pipeline:
+    /// 1. URL decode (iterative, max 3 levels — stops when result doesn't change)
+    /// 2. HTML entity decode (&#60; → <, &#x3C; → <, &lt; → <)
+    /// 3. Strip null bytes
+    /// 4. Normalize Unicode (homoglyph replacement, invisible char removal)
+    /// 5. Normalize whitespace (collapse tabs/newlines/multiple spaces)
+    /// 6. Lowercase
+    ///
+    /// Also produces a `comment_stripped` version with SQL/JS comments removed.
+    ///
+    /// INVARIANT: This is ONLY for analysis. The original content is NEVER modified.
+    pub fn normalize_comprehensive(&self, content: &str) -> NormalizedContent {
+        // Step 1: Iterative URL decode
+        let (url_decoded, url_decode_depth) = iterative_url_decode(content, 3);
+
+        // Step 2: HTML entity decode
+        let html_decoded = decode_html_entities(&url_decoded);
+
+        // Step 3: Strip null bytes
+        let null_stripped = html_decoded.replace('\0', "").replace("%00", "");
+
+        // Step 4: Unicode normalization (homoglyphs + invisible chars)
+        let unicode_normalized = self.normalize(&null_stripped);
+
+        // Step 5: Normalize whitespace
+        let whitespace_normalized = normalize_whitespace(&unicode_normalized);
+
+        // Step 6: Lowercase
+        let normalized = whitespace_normalized.to_lowercase();
+
+        // Produce comment-stripped version (separate)
+        let had_comments = COMMENT_PATTERN.is_match(&normalized);
+        let comment_stripped = if had_comments {
+            COMMENT_PATTERN.replace_all(&normalized, "").to_string()
+        } else {
+            normalized.clone()
+        };
+
+        NormalizedContent {
+            normalized,
+            comment_stripped,
+            had_comments,
+            url_decode_depth,
+        }
+    }
 }
 
 impl Default for EncodingDetector {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Iterative URL decode — converges when result stops changing.
+/// Returns (decoded_string, depth).
+/// Depth >= 2 → flag DoubleUrlEncoding.
+fn iterative_url_decode(input: &str, max_depth: u8) -> (String, u8) {
+    let mut current = input.to_string();
+    let mut depth: u8 = 0;
+
+    for _ in 0..max_depth {
+        let decoded = percent_decode(&current);
+        if decoded == current {
+            break; // Converged — no encoding remaining
+        }
+        current = decoded;
+        depth += 1;
+    }
+
+    (current, depth)
+}
+
+/// Simple percent-decode implementation
+fn percent_decode(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hex = &input[i + 1..i + 3];
+            if let Ok(byte) = u8::from_str_radix(hex, 16) {
+                if byte.is_ascii() {
+                    result.push(byte as char);
+                    i += 3;
+                    continue;
+                }
+            }
+        }
+        result.push(bytes[i] as char);
+        i += 1;
+    }
+
+    result
+}
+
+/// Decode HTML entities (both numeric and named)
+fn decode_html_entities(input: &str) -> String {
+    let mut result = input.to_string();
+
+    // Named entities
+    for (entity, ch) in HTML_NAMED_ENTITIES {
+        result = result.replace(entity, &ch.to_string());
+        // Case-insensitive
+        let upper = entity.to_uppercase();
+        if upper != *entity {
+            result = result.replace(&upper, &ch.to_string());
+        }
+    }
+
+    // Numeric entities: &#60; (decimal) and &#x3C; (hex)
+    // Process hex entities first
+    let hex_re = Regex::new(r"&#x([0-9a-fA-F]{1,6});").unwrap();
+    result = hex_re.replace_all(&result, |caps: &regex::Captures| {
+        let hex = &caps[1];
+        u32::from_str_radix(hex, 16)
+            .ok()
+            .and_then(char::from_u32)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| caps[0].to_string())
+    }).to_string();
+
+    // Decimal entities
+    let dec_re = Regex::new(r"&#(\d{1,7});").unwrap();
+    result = dec_re.replace_all(&result, |caps: &regex::Captures| {
+        let num = &caps[1];
+        num.parse::<u32>()
+            .ok()
+            .and_then(char::from_u32)
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| caps[0].to_string())
+    }).to_string();
+
+    result
+}
+
+/// Collapse multiple whitespace characters (tabs, newlines, spaces) into single spaces
+fn normalize_whitespace(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut last_was_space = false;
+
+    for c in input.chars() {
+        if c.is_whitespace() {
+            if !last_was_space {
+                result.push(' ');
+                last_was_space = true;
+            }
+        } else {
+            result.push(c);
+            last_was_space = false;
+        }
+    }
+
+    result
 }
 
 /// Simple base64 decode helper
@@ -292,7 +565,6 @@ mod tests {
     #[tokio::test]
     async fn test_homoglyph_detection() {
         let detector = EncodingDetector::new();
-        // Using Cyrillic 'а' which looks like ASCII 'a'
         let attacks = detector.detect("Hellо, wоrld!").await; // 'о' is Cyrillic
         assert!(attacks.contains(&EncodingAttack::UnicodeHomoglyph));
     }
@@ -312,13 +584,118 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_url_encoded_detection() {
+        let detector = EncodingDetector::new();
+        let attacks = detector.detect("%3Cscript%3Ealert(1)%3C/script%3E").await;
+        assert!(attacks.contains(&EncodingAttack::UrlEncodedPayload));
+    }
+
+    #[tokio::test]
+    async fn test_double_url_encoded_detection() {
+        let detector = EncodingDetector::new();
+        let attacks = detector.detect("%253Cscript%253E").await;
+        assert!(attacks.contains(&EncodingAttack::DoubleUrlEncoding));
+    }
+
+    #[tokio::test]
+    async fn test_html_entity_detection() {
+        let detector = EncodingDetector::new();
+        let attacks = detector.detect("&#60;script&#62;alert(1)&#60;/script&#62;").await;
+        assert!(attacks.contains(&EncodingAttack::HtmlEntityEncoding));
+    }
+
+    #[tokio::test]
+    async fn test_null_byte_detection() {
+        let detector = EncodingDetector::new();
+        let attacks = detector.detect("test%00.php").await;
+        assert!(attacks.contains(&EncodingAttack::NullByteInjection));
+    }
+
+    #[tokio::test]
+    async fn test_comment_insertion_detection() {
+        let detector = EncodingDetector::new();
+        let attacks = detector.detect("SEL/**/ECT * FROM users").await;
+        assert!(attacks.contains(&EncodingAttack::CommentInsertion));
+    }
+
+    #[tokio::test]
+    async fn test_mixed_encoding() {
+        let detector = EncodingDetector::new();
+        // URL encoding + HTML entities
+        let attacks = detector.detect("%3C&#115;cript%3E").await;
+        assert!(attacks.contains(&EncodingAttack::MixedEncoding));
+    }
+
+    #[tokio::test]
     async fn test_normalize() {
         let detector = EncodingDetector::new();
-
-        // Content with invisible chars and homoglyphs
         let dirty = "Hеllo\u{200B}Wоrld"; // Cyrillic е and о, zero-width space
         let clean = detector.normalize(dirty);
-
         assert!(!clean.contains('\u{200B}'));
+    }
+
+    #[test]
+    fn test_normalize_comprehensive_url_decode() {
+        let detector = EncodingDetector::new();
+        let result = detector.normalize_comprehensive("%3Cscript%3Ealert(1)%3C/script%3E");
+        assert!(result.normalized.contains("<script>alert(1)</script>"));
+        assert_eq!(result.url_decode_depth, 1);
+    }
+
+    #[test]
+    fn test_normalize_comprehensive_double_url() {
+        let detector = EncodingDetector::new();
+        let result = detector.normalize_comprehensive("%253Cscript%253E");
+        assert!(result.normalized.contains("<script>"));
+        assert_eq!(result.url_decode_depth, 2);
+    }
+
+    #[test]
+    fn test_normalize_comprehensive_html_entities() {
+        let detector = EncodingDetector::new();
+        let result = detector.normalize_comprehensive("&#60;script&#62;");
+        assert!(result.normalized.contains("<script>"));
+    }
+
+    #[test]
+    fn test_normalize_comprehensive_comment_stripped() {
+        let detector = EncodingDetector::new();
+        let result = detector.normalize_comprehensive("SEL/**/ECT * FROM users");
+        assert!(result.had_comments);
+        assert!(result.comment_stripped.contains("select * from users"));
+    }
+
+    #[test]
+    fn test_normalize_comprehensive_clean() {
+        let detector = EncodingDetector::new();
+        let result = detector.normalize_comprehensive("Hello World");
+        assert_eq!(result.url_decode_depth, 0);
+        assert!(!result.had_comments);
+        assert_eq!(result.normalized, "hello world");
+    }
+
+    #[test]
+    fn test_iterative_url_decode_convergence() {
+        let (decoded, depth) = iterative_url_decode("hello%20world", 3);
+        assert_eq!(decoded, "hello world");
+        assert_eq!(depth, 1);
+    }
+
+    #[test]
+    fn test_html_entity_decode_numeric() {
+        let result = decode_html_entities("&#60;div&#62;");
+        assert_eq!(result, "<div>");
+    }
+
+    #[test]
+    fn test_html_entity_decode_hex() {
+        let result = decode_html_entities("&#x3C;div&#x3E;");
+        assert_eq!(result, "<div>");
+    }
+
+    #[test]
+    fn test_html_entity_decode_named() {
+        let result = decode_html_entities("&lt;div&gt;");
+        assert_eq!(result, "<div>");
     }
 }

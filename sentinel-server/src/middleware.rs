@@ -50,7 +50,8 @@ pub fn extract_agent_id(headers: &HashMap<String, String>) -> Option<AgentId> {
     if let Some(auth) = headers.get("authorization") {
         if auth.starts_with("Bearer ") {
             // In production, this would verify and decode the JWT
-            // For now, we'll use a placeholder
+            // SAFE-SLICE: starts_with("Bearer ") = 7 byte ASCII → byte 7 è char-boundary
+            // e len ≥ 7 → `&auth[7..]` non può panicare (FP class non applicabile).
             return Some(AgentId::from_token(&auth[7..]));
         }
     }
@@ -81,11 +82,11 @@ impl SentinelMiddleware {
     ) -> Result<MiddlewareResult, SentinelError> {
         let agent_id = extract_agent_id(&request.headers);
 
-        let action = self.sentinel
+        let decision = self.sentinel
             .process(request, agent_id.as_ref())
             .await?;
 
-        Ok(MiddlewareResult::from_action(action))
+        Ok(MiddlewareResult::from_action(decision.action))
     }
 }
 

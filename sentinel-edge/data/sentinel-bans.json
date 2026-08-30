@@ -1,8 +1,0 @@
-[
-  {
-    "ip": "1.2.3.4",
-    "reason": "Test block",
-    "created_epoch": 1776593590,
-    "expires_epoch": 1776597190
-  }
-]

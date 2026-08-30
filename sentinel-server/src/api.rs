@@ -134,10 +134,6 @@ impl SentinelApi {
 
     /// GET /bans
     pub async fn list_bans(&self) -> ApiResponse<Vec<BanInfo>> {
-        let _stats = self.sentinel.response()
-            .get_stats();
-
-        // In a real implementation, we'd return the actual ban list
         ApiResponse::ok(vec![])
     }
 }
@@ -149,6 +145,76 @@ pub struct BanInfo {
     pub reason: String,
     pub expires_at: String,
     pub ban_count: u32,
+}
+
+/// Single ban push from TS BanService (immediate propagation)
+#[derive(Debug, Deserialize)]
+pub struct BanPushRequest {
+    pub ip: String,
+    pub reason: String,
+    pub duration_secs: u64,
+}
+
+/// Full ban sync payload from TS BanService (periodic backup)
+pub type BanSyncRequest = Vec<BanPushRequest>;
+
+/// Active ban info returned by GET /bans/active
+#[derive(Debug, Serialize)]
+pub struct ActiveBanInfo {
+    pub ip: String,
+    pub reason: String,
+    pub expires: String,
+}
+
+impl SentinelApi {
+    /// POST /bans/push — Single ban push from TS (immediate propagation)
+    pub async fn push_ban(&self, request: BanPushRequest) -> Result<ApiResponse<String>, SentinelError> {
+        let ip: IpAddr = request.ip.parse()
+            .map_err(|_| SentinelError::InvalidInput(format!("Invalid IP: {}", request.ip)))?;
+
+        let duration = Duration::from_secs(request.duration_secs);
+        self.sentinel.response().ban_ip(ip, sentinel_response::BanReason::Manual, duration).await;
+
+        tracing::info!(
+            ip = %ip,
+            reason = %request.reason,
+            duration_secs = request.duration_secs,
+            "Ban pushed from TS BanService"
+        );
+
+        Ok(ApiResponse::ok(format!("IP {} banned for {}s", ip, request.duration_secs)))
+    }
+
+    /// POST /bans/sync — Full ban sync from TS (periodic backup)
+    pub async fn sync_bans(&self, bans: BanSyncRequest) -> ApiResponse<String> {
+        let mut synced = 0u32;
+
+        for ban in bans {
+            if let Ok(ip) = ban.ip.parse::<IpAddr>() {
+                let duration = Duration::from_secs(ban.duration_secs);
+                self.sentinel.response().ban_ip(ip, sentinel_response::BanReason::Manual, duration).await;
+                synced += 1;
+            }
+        }
+
+        tracing::info!(synced_count = synced, "Full ban sync from TS BanService");
+
+        ApiResponse::ok(format!("{} bans synced", synced))
+    }
+
+    /// GET /bans/active — List all active Rust bans
+    pub async fn active_bans(&self) -> ApiResponse<Vec<ActiveBanInfo>> {
+        let banned_ips = self.sentinel.response().get_banned_ips();
+        let bans: Vec<ActiveBanInfo> = banned_ips.into_iter().map(|(ip, entry)| {
+            ActiveBanInfo {
+                ip: ip.to_string(),
+                reason: entry.reason.to_string(),
+                expires: format!("{}s remaining", entry.time_remaining().as_secs()),
+            }
+        }).collect();
+
+        ApiResponse::ok(bans)
+    }
 }
 
 #[cfg(test)]

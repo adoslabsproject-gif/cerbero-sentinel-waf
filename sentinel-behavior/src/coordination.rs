@@ -12,6 +12,14 @@ use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// Cap HARD del deque timestamps per-cluster (anti-OOM, classe EL1-B): il time-prune
+/// per-finestra non basta a bound-are il COUNT sotto flood ad alto rate. La detection
+/// confronta solo con soglie ≪ questo valore → nessun impatto sul rilevamento.
+const MAX_CLUSTER_TIMESTAMPS: usize = 4096;
+/// Cap HARD del numero di IP per-cluster (anti-OOM): IP attacker-controlled. La
+/// detection BotNet/Sybil scatta a soglie ≪ questo valore.
+const MAX_CLUSTER_IPS: usize = 4096;
+
 /// Types of coordinated attacks
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CoordinatedAttack {
@@ -101,7 +109,6 @@ struct RequestCluster {
     /// Timestamps
     timestamps: VecDeque<Instant>,
     /// First seen
-    #[allow(dead_code)]
     first_seen: Instant,
 }
 
@@ -129,8 +136,13 @@ impl RequestCluster {
         }
 
         self.timestamps.push_back(now);
+        // Cap HARD (EL1-B): oltre il cap droppa il più vecchio (il time-prune sopra non
+        // bounda il COUNT sotto flood ad alto rate).
+        while self.timestamps.len() > MAX_CLUSTER_TIMESTAMPS {
+            self.timestamps.pop_front();
+        }
 
-        if !self.ips.contains(&ip) {
+        if !self.ips.contains(&ip) && self.ips.len() < MAX_CLUSTER_IPS {
             self.ips.push(ip);
         }
     }

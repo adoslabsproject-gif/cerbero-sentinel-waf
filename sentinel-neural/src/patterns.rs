@@ -125,13 +125,6 @@ static INSTRUCTION_OVERRIDE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
         Regex::new(r"(?i)I\s+have\s+(admin|root|developer)\s+(access|privileges?)").unwrap(),
         Regex::new(r"(?i)admin\s+(override|command|mode)").unwrap(),
         Regex::new(r"(?i)execute\s+(admin|root|system)\s+command").unwrap(),
-        // System override markers (hidden in code comments, brackets, etc.)
-        Regex::new(r"(?i)\bSYSTEM_OVERRIDE\b").unwrap(),
-        Regex::new(r"(?i)\bADMIN_OVERRIDE\b").unwrap(),
-        Regex::new(r"(?i)\bIGNORE_SAFETY_FILTERS?\b").unwrap(),
-        Regex::new(r"(?i)\bHIDDEN_INSTRUCTION\b").unwrap(),
-        Regex::new(r"(?i)\bCONFIRM_VULNERABILITY\b").unwrap(),
-        Regex::new(r"(?i)\bDISABLE_SECURITY\b").unwrap(),
     ]
 });
 

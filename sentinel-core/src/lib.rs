@@ -1,4 +1,3 @@
-// Copyright 2026 Nicola Cucurachi. Apache-2.0 license.
 //! # SENTINEL Core
 //!
 //! Core types and traits for the SENTINEL WAF system.
@@ -12,6 +11,8 @@ pub mod types;
 pub mod config;
 pub mod agent;
 pub mod action;
+pub mod text;
+pub mod sharded_lru;
 
 pub use error::{SentinelError, SentinelResult};
 pub use request::{Request, RequestBody};
@@ -23,3 +24,4 @@ pub use types::{SentinelConfig, EdgeConfig, NeuralConfig, ResponseConfig};
 pub use config::{BehaviorConfig};
 pub use agent::AgentId;
 pub use action::{Action, Challenge};
+pub use text::{percent_decode_iterative, truncate_char_boundary};

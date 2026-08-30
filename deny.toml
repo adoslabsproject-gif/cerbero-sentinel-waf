@@ -1,0 +1,52 @@
+## cargo-deny config — supply-chain hardening per Sentinel WAF (Rust)
+## ─────────────────────────────────────────────────────────────────────
+## Run: cd apps/sentinel && cargo deny check
+## Output: failure se CVE note, dep proibite, license forbidden, deps banned.
+
+[graph]
+targets = [
+  { triple = "x86_64-unknown-linux-gnu" },
+  { triple = "aarch64-unknown-linux-gnu" },
+]
+all-features = false
+no-default-features = false
+
+# ─── ADVISORIES (CVE) ────────────────────────────────────────────────
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = [
+  # Ignora qui solo CVE con justification (CVE-id e perche\` non applicabile)
+  # Esempio: "RUSTSEC-2020-0071",  # time crate UB on 32-bit only, non applicabile a noi
+]
+
+# ─── LICENSES ────────────────────────────────────────────────────────
+[licenses]
+allow = [
+  "MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause", "BSD-3-Clause", "ISC", "Zlib",
+  "MPL-2.0",     # libreria singola, non interfere con il binario closed-source
+  "Unicode-DFS-2016", "Unicode-3.0",
+  "0BSD", "CC0-1.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+# ─── BANS (dependencies vietate) ─────────────────────────────────────
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+deny = [
+  # Esempio: { name = "openssl", reason = "use rustls instead" }
+]
+skip = []
+skip-tree = []
+
+# ─── SOURCES (registry/git allowlist) ────────────────────────────────
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

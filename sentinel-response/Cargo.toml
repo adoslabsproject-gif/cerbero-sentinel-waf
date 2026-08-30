@@ -7,14 +7,24 @@ authors.workspace = true
 
 [dependencies]
 sentinel-core = { path = "../sentinel-core" }
+sentinel-persistence = { path = "../sentinel-persistence" }
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 dashmap = { workspace = true }
 tracing = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
 hex = "0.4"
 rand = "0.8"
 chrono = "0.4"
+reqwest = { version = "0.12", features = ["json"], default-features = false, optional = true }
+hmac = "0.12"
+
+[features]
+default = ["webhook"]
+webhook = ["reqwest"]
 
 [dev-dependencies]
 tokio-test = { workspace = true }
+wiremock = "0.6"

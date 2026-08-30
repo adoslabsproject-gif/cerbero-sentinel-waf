@@ -1,4 +1,3 @@
-// Copyright 2026 Nicola Cucurachi. Apache-2.0 license.
 //! SENTINEL Neural Defense - Layer 2
 //!
 //! Provides ML-powered threat detection for AI agents:
@@ -13,6 +12,8 @@ pub mod toxicity;
 pub mod llm_output_safety;
 pub mod encoding;
 pub mod patterns;
+pub mod web_attacks;
+pub mod threat_features;
 
 use sentinel_core::{Request, LayerRiskScore as RiskScore, RiskLevel, RiskFlag, SentinelError, NeuralConfig};
 use std::sync::Arc;
@@ -22,6 +23,7 @@ pub use toxicity::{ToxicityAnalyzer, ToxicityResult};
 pub use llm_output_safety::{LLMOutputSafetyAnalyzer, LLMOutputSafetyResult};
 pub use encoding::{EncodingDetector, EncodingAttack};
 pub use patterns::{PatternMatcher, SuspiciousPattern};
+pub use web_attacks::{WebAttackDetector, WebAttack, WebAttackCategory};
 
 /// Neural Defense - ML-powered threat detection
 pub struct NeuralDefense {
@@ -31,6 +33,7 @@ pub struct NeuralDefense {
     llm_output_safety: Arc<LLMOutputSafetyAnalyzer>,
     encoding_detector: Arc<EncodingDetector>,
     pattern_matcher: Arc<PatternMatcher>,
+    web_attack_detector: Arc<WebAttackDetector>,
 }
 
 impl NeuralDefense {
@@ -42,8 +45,16 @@ impl NeuralDefense {
             llm_output_safety: Arc::new(LLMOutputSafetyAnalyzer::new(&config)?),
             encoding_detector: Arc::new(EncodingDetector::new()),
             pattern_matcher: Arc::new(PatternMatcher::new()),
+            web_attack_detector: Arc::new(WebAttackDetector::new()),
             config,
         })
+    }
+
+    /// Hot-reload (flywheel Fase 5): controlla se il modello ONNX di prompt-injection è stato
+    /// ripubblicato dal cron di retrain e, in tal caso, lo ricarica. Rate-limitato internamente.
+    /// Chiamare periodicamente dal loop del server (accanto a threat_classifier.check_for_updates).
+    pub fn check_prompt_injection_updates(&self) {
+        self.injection_detector.maybe_reload();
     }
 
     /// Analyze request content for threats
@@ -81,11 +92,86 @@ impl NeuralDefense {
                     score.add_flag(RiskFlag::RtlOverride);
                     score.neural_score += 0.7;
                 }
+                // New encoding bypass variants
+                EncodingAttack::UrlEncodedPayload => {
+                    score.add_flag(RiskFlag::UrlEncodedPayload);
+                    score.neural_score += 0.3;
+                }
+                EncodingAttack::DoubleUrlEncoding => {
+                    score.add_flag(RiskFlag::DoubleUrlEncoding);
+                    score.neural_score += 0.6;
+                }
+                EncodingAttack::HtmlEntityEncoding => {
+                    score.add_flag(RiskFlag::HtmlEntityEncoding);
+                    score.neural_score += 0.4;
+                }
+                EncodingAttack::NullByteInjection => {
+                    score.add_flag(RiskFlag::NullByteInjection);
+                    score.neural_score += 0.7;
+                }
+                EncodingAttack::OverlongUtf8 => {
+                    score.add_flag(RiskFlag::OverlongUtf8);
+                    score.neural_score += 0.8;
+                }
+                EncodingAttack::MixedEncoding => {
+                    score.add_flag(RiskFlag::MixedEncoding);
+                    score.neural_score += 0.5;
+                }
+                EncodingAttack::CommentInsertion => {
+                    score.add_flag(RiskFlag::CommentInsertion);
+                    score.neural_score += 0.4;
+                }
+                EncodingAttack::CaseMutationEncoding => {
+                    score.add_flag(RiskFlag::CaseMutationEncoding);
+                    score.neural_score += 0.3;
+                }
             }
         }
 
+        // 1.5 Comprehensive normalization (ANALYSIS COPY ONLY — original never modified)
+        // Pipeline: URL decode (iterative) → HTML entity decode → null strip → Unicode → whitespace → lowercase
+        let norm = self.encoding_detector.normalize_comprehensive(&content);
+
+        // Flag encoding depth as additional risk indicators
+        if norm.url_decode_depth >= 2 {
+            score.add_flag(RiskFlag::DoubleUrlEncoding);
+            score.neural_score += 0.4;
+        }
+        if norm.had_comments {
+            score.add_flag(RiskFlag::CommentInsertion);
+            score.neural_score += 0.2;
+        }
+
+        // 1.6 Web attack detection (fast, RegexSet O(n) across 120+ patterns)
+        // Scan BOTH original and normalized content, plus comment-stripped version
+        let web_attacks_original = self.web_attack_detector.detect(&content).await;
+        let web_attacks_normalized = self.web_attack_detector.detect(&norm.normalized).await;
+        let web_attacks_stripped = if norm.had_comments {
+            self.web_attack_detector.detect(&norm.comment_stripped).await
+        } else {
+            Vec::new()
+        };
+
+        // Merge: take highest severity per category from any scan
+        let mut web_attack_map = std::collections::HashMap::new();
+        for attack in web_attacks_original.iter()
+            .chain(web_attacks_normalized.iter())
+            .chain(web_attacks_stripped.iter())
+        {
+            let entry = web_attack_map.entry(attack.category).or_insert(attack.clone());
+            if attack.severity > entry.severity {
+                *entry = attack.clone();
+            }
+        }
+
+        for attack in web_attack_map.values() {
+            score.add_flag(attack.to_risk_flag());
+            score.neural_score += attack.severity_score();
+        }
+
         // 2. Pattern matching (fast regex-based detection)
-        let patterns = self.pattern_matcher.find(&content).await;
+        // Run on normalized content to catch encoded prompt injection / jailbreak
+        let patterns = self.pattern_matcher.find(&norm.normalized).await;
         for pattern in &patterns {
             match pattern {
                 SuspiciousPattern::SystemPromptLeak => {
@@ -169,6 +255,16 @@ impl NeuralDefense {
         };
 
         Ok(score)
+    }
+
+    /// Get LLM output safety analyzer (for direct content analysis)
+    pub fn llm_output_safety(&self) -> &LLMOutputSafetyAnalyzer {
+        &self.llm_output_safety
+    }
+
+    /// Get toxicity analyzer (for direct content analysis)
+    pub fn toxicity(&self) -> &ToxicityAnalyzer {
+        &self.toxicity_analyzer
     }
 
     /// Extract content to analyze from request

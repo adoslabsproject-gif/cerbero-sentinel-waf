@@ -12,6 +12,8 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+lru = { workspace = true }
+parking_lot = { workspace = true }
 
 [dev-dependencies]
 tokio-test = { workspace = true }

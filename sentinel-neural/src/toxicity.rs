@@ -41,11 +41,12 @@ pub enum ToxicityCategory {
     Scam,
 }
 
-/// Patterns for toxicity detection
+/// BASELINE regex (NON il detector principale). Il rilevamento accurato è il modello ONNX
+/// (campo `model`, vedi doc del modulo): queste regex sono il FALLBACK quando l'ONNX non è
+/// caricato, e catturano solo i casi più espliciti di incitamento. Non è un "placeholder":
+/// è degradazione controllata: ONNX presente → ML; ONNX assente → questo baseline.
 static HATE_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     vec![
-        // Placeholder patterns - in production, use comprehensive word lists
-        // and ML models for accurate detection
         Regex::new(r"(?i)\b(hate|kill|murder)\s+(all|every)\s+\w+s\b").unwrap(),
         Regex::new(r"(?i)\b(exterminate|eliminate|eradicate)\s+(the\s+)?\w+s\b").unwrap(),
     ]
