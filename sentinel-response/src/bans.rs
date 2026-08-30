@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 /// IP infrastruttura/owner fidati, da `SENTINEL_TRUSTED_IPS` (CSV). Mai bannati.
 /// Letti una sola volta (lazy). Esempio:
-///   SENTINEL_TRUSTED_IPS="2a01:4f8:2210:2f83::2,78.46.219.172"
+///   SENTINEL_TRUSTED_IPS="2001:db8::2,203.0.113.10"
 fn trusted_ips() -> &'static Vec<IpAddr> {
     static TRUSTED: OnceLock<Vec<IpAddr>> = OnceLock::new();
     TRUSTED.get_or_init(|| {

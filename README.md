@@ -1,42 +1,61 @@
-# Cerbero Sentinel WAF
+<div align="center">
+
+# 🛡️ Cerbero Sentinel WAF
 
 **Web Application Firewall with AI-native defense layers**
 
-A full WAF that protects any web application or API. Rate limiting, IP reputation, GeoIP, DDoS detection, ban management — everything a WAF should do. On top of that, it adds layers specifically designed for AI/LLM endpoints: prompt injection detection, toxicity analysis, per-agent behavioral profiling, and coordinated attack clustering.
+[![Rust](https://img.shields.io/badge/Rust-stable-000000?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Latency](https://img.shields.io/badge/latency-2--15ms-brightgreen)](#architecture)
+[![Deploy](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](DEPLOY.md)
+[![Single binary](https://img.shields.io/badge/single-binary-orange)](#quick-start-2-minutes)
+[![License](https://img.shields.io/badge/license-proprietary-lightgrey)](LICENSE)
 
-Built in Rust. 2-15ms latency. Single binary. Zero runtime dependencies.
+A full WAF in front of any web app or API — rate limiting, IP reputation, GeoIP, DDoS protection, ban management — plus layers built for AI/LLM endpoints: prompt-injection detection, toxicity analysis, per-agent behavioral profiling, and coordinated-attack clustering.
 
-*Created by Nicola Cucurachi — [nothumanallowed.com](https://nothumanallowed.com)*
+**Rust · 2–15 ms latency · single binary · zero runtime dependencies**
+
+Created by **Nicola Cucurachi** — [nothumanallowed.com](https://nothumanallowed.com)
+
+</div>
+
+---
 
 ## Why Cerbero
 
-Traditional WAFs protect websites. Cerbero protects websites AND the AI behind them.
+Traditional WAFs protect websites. Cerbero protects websites **and the AI behind them**.
 
-| Feature | Traditional WAFs | Cerbero |
-|---------|-----------------|----------|
-| Detection | Regex patterns | ML + Behavioral + Semantic |
-| Prompt Injection | Pattern matching | DeBERTa fine-tuned + embedding similarity |
-| Agent Profiling | None | Per-agent behavioral baseline |
-| Coordinated Attacks | No | DBSCAN clustering real-time |
-| False Positives | 5-15% | < 1% (adaptive learning) |
-| Latency | 10-50ms | 2-15ms (Rust + ONNX) |
+| | Traditional WAFs | Cerbero |
+|---|---|---|
+| Detection | Regex patterns | ML + behavioral + semantic |
+| Prompt injection | Pattern matching | DeBERTa fine-tuned + embedding similarity |
+| Agent profiling | None | Per-agent behavioral baseline |
+| Coordinated attacks | No | Real-time DBSCAN clustering |
+| False positives | 5–15% | < 1% (adaptive learning) |
+| Latency | 10–50 ms | 2–15 ms (Rust + ONNX) |
 
 ## Architecture
 
+Sentinel sits **in front of** your application, between the reverse proxy and the backend. Every request passes through four layers before it reaches the platform.
+
+```mermaid
+flowchart TD
+    C[Client] --> P[Reverse proxy<br/>nginx / Traefik]
+    P --> L1[Layer 1 · Edge Shield<br/>rate limit · IP intel · DDoS · GeoIP]
+    L1 --> L2[Layer 2 · Neural Defense<br/>prompt injection · toxicity]
+    L2 --> L3[Layer 3 · Behavioral<br/>agent profile · anomalies]
+    L3 --> L4[Layer 4 · Response<br/>adaptive actions · escalation]
+    L4 -->|ALLOW| B[Protected platform]
+    L4 -->|BLOCK · CHALLENGE · RATE_LIMIT| X[Request stopped]
 ```
-REQUEST → Layer 1: Edge Shield     (< 1ms)  → Rate limiting, IP intel, DDoS
-        → Layer 2: Neural Defense  (< 5ms)  → Prompt injection, semantic analysis
-        → Layer 3: Behavioral      (< 3ms)  → Agent profiling, anomaly detection
-        → Layer 4: Response         (< 1ms)  → Adaptive actions, auto-escalation
-        → ALLOW / BLOCK / CHALLENGE / RATE_LIMIT
-```
+
+> 📦 **Deploying to a new server?** See **[DEPLOY.md](DEPLOY.md)** — neutral setup, `.env` configuration, model & GeoIP provisioning.
 
 ## Quick Start (2 minutes)
 
 ```bash
 # 1. Clone and build
-git clone https://github.com/adoslabsproject-gif/cerbero-waf.git
-cd cerbero-waf
+git clone https://github.com/adoslabsproject-gif/cerbero-sentinel-waf.git
+cd cerbero-sentinel-waf
 cargo build --release
 
 # 2. Run
