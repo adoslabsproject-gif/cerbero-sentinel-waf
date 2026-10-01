@@ -13,9 +13,9 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-license = "UNLICENSED"
-repository = "https://github.com/zeliai/zeliai"
-authors = ["ZeliAI Team"]
+license = "PolyForm-Noncommercial-1.0.0"
+repository = "https://github.com/adoslabsproject-gif/cerbero-sentinel-waf"
+authors = ["Nicola Cucurachi <ados.labsproject@gmail.com>"]
 
 [workspace.dependencies]
 # Async runtime

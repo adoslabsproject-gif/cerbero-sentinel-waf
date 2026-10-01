@@ -8,7 +8,7 @@
 [![Latency](https://img.shields.io/badge/latency-2--15ms-brightgreen)](#architecture)
 [![Deploy](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](DEPLOY.md)
 [![Single binary](https://img.shields.io/badge/single-binary-orange)](#quick-start-2-minutes)
-[![License](https://img.shields.io/badge/license-proprietary-lightgrey)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-6366f1)](LICENSE)
 
 A full WAF in front of any web app or API — rate limiting, IP reputation, GeoIP, DDoS protection, ban management — plus layers built for AI/LLM endpoints: prompt-injection detection, toxicity analysis, per-agent behavioral profiling, and coordinated-attack clustering.
 
@@ -417,9 +417,15 @@ A WAF keeps per-attacker state, and per-attacker state is where memory leaks liv
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+**PolyForm Noncommercial 1.0.0** — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
 
-Any fork or derivative work must retain the NOTICE file with original attribution.
+Source-available, not open source. In plain terms:
+
+- ✅ **Read it, run it, modify it, fork it, share it** — for any noncommercial purpose: personal use, research, experimentation, teaching, and use by charities, schools, public research bodies and government institutions.
+- ❌ **No commercial use.** You may not sell this software, sell a product or service built on it, offer it as a paid or ad-supported service, or otherwise commercialize it — in any form, modified or not.
+- 📎 **Keep the notices.** Any copy you pass on must carry these terms and the `Required Notice` line, as described in [NOTICE](NOTICE).
+
+Commercial licensing is available — contact the author.
 
 ## Author
 

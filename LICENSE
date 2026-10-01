@@ -1,94 +1,75 @@
-                                 Apache License
-                           Version 2.0, January 2004
-                        http://www.apache.org/licenses/
+# PolyForm Noncommercial License 1.0.0
 
-   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-   1. Definitions.
+Required Notice: Copyright 2026 Nicola Cucurachi / adoslabs (https://adoslabs.it) — Cerbero Sentinel WAF
 
-      "License" shall mean the terms and conditions for use, reproduction,
-      and distribution as defined by Sections 1 through 9 of this document.
+## Acceptance
 
-      "Licensor" shall mean the copyright owner or entity authorized by
-      the copyright owner that is granting the License.
+In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
 
-      "Legal Entity" shall mean the union of the acting entity and all
-      other entities that control, are controlled by, or are under common
-      control with that entity.
+## Copyright License
 
-      "You" (or "Your") shall mean an individual or Legal Entity
-      exercising permissions granted by this License.
+The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose. However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
 
-      "Source" form shall mean the preferred form for making modifications.
+## Distribution License
 
-      "Object" form shall mean any form resulting from mechanical
-      transformation or translation of a Source form.
+The licensor grants you an additional copyright license to distribute copies of the software. Your license to distribute covers distributing the software with changes and new works permitted by [Changes and New Works License](#changes-and-new-works-license).
 
-      "Work" shall mean the work of authorship made available under the License.
+## Notices
 
-      "Contribution" shall mean any work of authorship submitted to the Licensor.
+You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms or the URL for them above, as well as copies of any plain-text lines beginning with `Required Notice:` that the licensor provided with the software. For example:
 
-      "Contributor" shall mean Licensor and any Legal Entity on behalf of whom
-      a Contribution has been received by the Licensor.
+> Required Notice: Copyright 2026 Nicola Cucurachi / adoslabs (https://adoslabs.it) — Cerbero Sentinel WAF
 
-   2. Grant of Copyright License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      copyright license to reproduce, prepare Derivative Works of,
-      publicly display, publicly perform, sublicense, and distribute the
-      Work and such Derivative Works in Source or Object form.
+## Changes and New Works License
 
-   3. Grant of Patent License. Subject to the terms and conditions of
-      this License, each Contributor hereby grants to You a perpetual,
-      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
-      patent license to make, have made, use, offer to sell, sell,
-      import, and otherwise transfer the Work.
+The licensor grants you an additional copyright license to make changes and new works based on the software for any permitted purpose.
 
-   4. Redistribution. You may reproduce and distribute copies of the
-      Work or Derivative Works thereof in any medium, with or without
-      modifications, and in Source or Object form, provided that You
-      meet the following conditions:
+## Patent License
 
-      (a) You must give any other recipients of the Work or
-          Derivative Works a copy of this License; and
+The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software.
 
-      (b) You must cause any modified files to carry prominent notices
-          stating that You changed the files; and
+## Noncommercial Purposes
 
-      (c) You must retain, in the Source form of any Derivative Works
-          that You distribute, all copyright, patent, trademark, and
-          attribution notices from the Source form of the Work; and
+Any noncommercial purpose is a permitted purpose.
 
-      (d) If the Work includes a "NOTICE" text file, You must include
-          a readable copy of the attribution notices contained within
-          such NOTICE file.
+## Personal Uses
 
-   5. Submission of Contributions. Unless You explicitly state otherwise,
-      any Contribution intentionally submitted for inclusion in the Work
-      by You to the Licensor shall be under the terms and conditions of
-      this License, without any additional terms or conditions.
+Personal use for research, experiment, and testing for the benefit of public knowledge, personal study, private entertainment, hobby projects, amateur pursuits, or religious observance, without any anticipated commercial application, is use for a permitted purpose.
 
-   6. Trademarks. This License does not grant permission to use the trade
-      names, trademarks, service marks, or product names of the Licensor.
+## Noncommercial Organizations
 
-   7. Disclaimer of Warranty. The Work is provided on an "AS IS" BASIS,
-      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND.
+Use by any charitable organization, educational institution, public research organization, public safety or health organization, environmental protection organization, or government institution is use for a permitted purpose regardless of the source of funding or obligations resulting from the funding.
 
-   8. Limitation of Liability. In no event shall any Contributor be
-      liable to You for damages.
+## Fair Use
 
-   9. Accepting Warranty or Additional Liability.
+You may have "fair use" rights for the software under the law. These terms do not limit them.
 
-   Copyright 2026 Nicola Cucurachi / NotHumanAllowed
+## No Other Rights
 
-   Licensed under the Apache License, Version 2.0 (the "License");
-   you may not use this file except in compliance with the License.
-   You may obtain a copy of the License at
+These terms do not allow you to sublicense or transfer any of your licenses to anyone else, or prevent the licensor from granting licenses to anyone else. These terms do not imply any other licenses.
 
-       http://www.apache.org/licenses/LICENSE-2.0
+## Patent Defense
 
-   Unless required by applicable law or agreed to in writing, software
-   distributed under the License is distributed on an "AS IS" BASIS,
-   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-   See the License for the specific language governing permissions and
-   limitations under the License.
+If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have violated any of these terms, or done anything with the software not covered by your licenses, your licenses can nonetheless continue if you come into full compliance with these terms, and take practical steps to correct past violations, within 32 days of receiving notice. Otherwise, all your licenses end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these terms, and the **software** is the software the licensor makes available under these terms.
+
+**You** refers to the individual or entity agreeing to these terms.
+
+**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization. **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise. Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the software under these terms.
+
+**Use** means anything you do with the software requiring one of your licenses.
