@@ -870,8 +870,32 @@ impl Sentinel {
             *last = Instant::now();
             // Cleanup behavioral data (cross-IP, identity graph, intent, timing)
             self.behavior.cleanup();
+
+            // Layer 4 was NOT part of this: ChallengeGenerator::cleanup and
+            // BanManager::cleanup existed but nothing ever called them, so an
+            // unanswered challenge, an expired ban and one action-history key per
+            // attacker IP stayed in memory until the process restarted.
+            const RESPONSE_STATE_MAX_AGE: std::time::Duration =
+                std::time::Duration::from_secs(24 * 60 * 60);
+            let response = self.response.cleanup(RESPONSE_STATE_MAX_AGE);
+
+            // The per-endpoint limiter is a process-wide static consulted by the
+            // edge layer: its expired windows were swept only inside its own test.
+            sentinel_edge::GLOBAL_ENDPOINT_LIMITER.cleanup_expired(Instant::now());
+
             // Evict stale cache entries
             self.evict_cache();
+
+            if response.freed_anything() {
+                tracing::warn!(
+                    challenges_dropped = response.challenges_dropped,
+                    challenges_remaining = response.challenges_remaining,
+                    bans_dropped = response.bans_dropped,
+                    ip_histories_dropped = response.ip_histories_dropped,
+                    ip_histories_remaining = response.ip_histories_remaining,
+                    "Response layer state reclaimed"
+                );
+            }
 
             tracing::debug!(
                 cache_size = self.analysis_cache.len(),

@@ -227,12 +227,20 @@ impl AgentProfiler {
         })
     }
 
-    /// Clean stale profiles
-    pub async fn cleanup(&self, max_age: Duration) {
+    /// Drop stale profiles, returning how many were removed.
+    ///
+    /// The filter is on `created_at`, so `max_age` caps profile LIFETIME and not
+    /// idleness: an agent that is still active loses its baseline when its profile
+    /// ages out. The caller therefore passes a generous multiple of the profile
+    /// window. Sync for the same reason as `SessionAnalyzer::cleanup`, which it is
+    /// now called alongside.
+    pub fn cleanup(&self, max_age: Duration) -> usize {
+        let before = self.profiles.len();
         let now = Instant::now();
         self.profiles.retain(|_, profile| {
             now.duration_since(profile.created_at) < max_age
         });
+        before - self.profiles.len()
     }
 }
 

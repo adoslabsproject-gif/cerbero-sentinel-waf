@@ -238,8 +238,13 @@ impl CoordinationDetector {
             .push(signature);
     }
 
-    /// Cleanup old data
-    pub async fn cleanup(&self, max_age: Duration) {
+    /// Drop stale clusters and cap the per-IP signature lists, returning how many
+    /// clusters were removed.
+    ///
+    /// Sync, like the other behavioural cleanups it is now called alongside: there
+    /// is nothing to await here, and until 2026-10-01 nothing called it at all.
+    pub fn cleanup(&self, max_age: Duration) -> usize {
+        let before = self.clusters.len();
         let now = Instant::now();
 
         self.clusters.retain(|_, cluster| {
@@ -252,6 +257,8 @@ impl CoordinationDetector {
                 entry.value_mut().truncate(1000);
             }
         });
+
+        before - self.clusters.len()
     }
 
     /// Get cluster info for monitoring

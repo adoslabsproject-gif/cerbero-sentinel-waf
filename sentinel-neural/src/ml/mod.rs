@@ -13,33 +13,175 @@ use std::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use parking_lot::{Mutex, RwLock};
+use unicode_general_category::{get_general_category, GeneralCategory};
+use unicode_normalization::UnicodeNormalization;
 use ort::session::Session;
 use ort::session::builder::GraphOptimizationLevel;
 use sentinel_core::SentinelError;
 
-/// Special token IDs (BERT standard, matching Node.js MLInferenceService)
+/// Padding id. `[UNK]`, `[CLS]` and `[SEP]` are NOT hardcoded any more: they are
+/// read from the vocabulary, so a vocab that does not place them at 100/101/102
+/// fails loudly at load instead of silently feeding the model the wrong ids.
 const PAD_TOKEN_ID: i64 = 0;
-const UNK_TOKEN_ID: i64 = 100;
-const CLS_TOKEN_ID: i64 = 101;
-const SEP_TOKEN_ID: i64 = 102;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WordPieceTokenizer
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// WordPiece tokenizer compatible with BERT `vocab.txt`.
+/// A word longer than this is a single `[UNK]` (HuggingFace: max_input_chars_per_word)
+const MAX_INPUT_CHARS_PER_WORD: usize = 100;
+
+/// Characters HuggingFace treats as control characters and deletes.
+fn is_control_char(c: char) -> bool {
+    if c == '\t' || c == '\n' || c == '\r' {
+        return false;
+    }
+    matches!(
+        get_general_category(c),
+        GeneralCategory::Control
+            | GeneralCategory::Format
+            | GeneralCategory::Surrogate
+            | GeneralCategory::PrivateUse
+            | GeneralCategory::Unassigned
+    )
+}
+
+/// Whitespace per BERT: the three ASCII ones plus Unicode space separators.
+fn is_bert_whitespace(c: char) -> bool {
+    c == ' '
+        || c == '\t'
+        || c == '\n'
+        || c == '\r'
+        || get_general_category(c) == GeneralCategory::SpaceSeparator
+}
+
+/// Punctuation per BERT: all ASCII symbol ranges (so `$`, `+`, `^` count) plus every Unicode P* category.
+fn is_punctuation(c: char) -> bool {
+    let cp = c as u32;
+    if (33..=47).contains(&cp) || (58..=64).contains(&cp) || (91..=96).contains(&cp) || (123..=126).contains(&cp) {
+        return true;
+    }
+    matches!(
+        get_general_category(c),
+        GeneralCategory::ConnectorPunctuation
+            | GeneralCategory::DashPunctuation
+            | GeneralCategory::OpenPunctuation
+            | GeneralCategory::ClosePunctuation
+            | GeneralCategory::InitialPunctuation
+            | GeneralCategory::FinalPunctuation
+            | GeneralCategory::OtherPunctuation
+    )
+}
+
+fn is_chinese_char(cp: u32) -> bool {
+    (0x4E00..=0x9FFF).contains(&cp)
+        || (0x3400..=0x4DBF).contains(&cp)
+        || (0x20000..=0x2A6DF).contains(&cp)
+        || (0x2A700..=0x2B73F).contains(&cp)
+        || (0x2B740..=0x2B81F).contains(&cp)
+        || (0x2B820..=0x2CEAF).contains(&cp)
+        || (0xF900..=0xFAFF).contains(&cp)
+        || (0x2F800..=0x2FA1F).contains(&cp)
+}
+
+/// Drop NUL, U+FFFD and control characters; turn every whitespace into a plain space.
+fn clean_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| *c != '\0' && *c != '\u{FFFD}' && !is_control_char(*c))
+        .map(|c| if is_bert_whitespace(c) { ' ' } else { c })
+        .collect()
+}
+
+/// CJK ideographs are tokenized one character at a time.
+fn pad_chinese_chars(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if is_chinese_char(c as u32) {
+            out.push(' ');
+            out.push(c);
+            out.push(' ');
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn strip_accents(text: &str) -> String {
+    text.nfd()
+        .filter(|c| get_general_category(*c) != GeneralCategory::NonspacingMark)
+        .collect()
+}
+
+fn split_on_punctuation(token: &str) -> Vec<String> {
+    let mut pieces: Vec<String> = Vec::new();
+    let mut start_new = true;
+    for c in token.chars() {
+        if is_punctuation(c) {
+            pieces.push(c.to_string());
+            start_new = true;
+        } else {
+            if start_new {
+                pieces.push(String::new());
+                start_new = false;
+            }
+            pieces
+                .last_mut()
+                .expect("a piece was pushed before writing into it")
+                .push(c);
+        }
+    }
+    pieces.retain(|p| !p.is_empty());
+    pieces
+}
+
+/// HuggingFace `BasicTokenizer(do_lower_case=True, tokenize_chinese_chars=True)`.
+pub fn basic_tokenize(text: &str) -> Vec<String> {
+    let prepared = pad_chinese_chars(&clean_text(text));
+    let mut tokens = Vec::new();
+    for word in prepared.split_whitespace() {
+        tokens.extend(split_on_punctuation(&strip_accents(&word.to_lowercase())));
+    }
+    tokens
+}
+
+/// BERT WordPiece tokenizer — the tokenizer the models were TRAINED with.
 ///
-/// Implements the same tokenization as Node.js `SimpleTokenizer`:
-/// lowercase → remove non-alphanumeric → split whitespace →
-/// vocab lookup → `##subword` fallback → UNK → prepend CLS → append SEP → pad
+/// This used to implement the Node.js `SimpleTokenizer` instead: lowercase, then
+/// replace every non-alphanumeric ASCII character with a space. The ONNX models,
+/// however, are trained with `DistilBertTokenizer(do_lower_case=True)`, which
+/// keeps punctuation as tokens of its own. So `<script>alert(1)</script>` reached
+/// the model as `script alert 1 script`, and `/api/v1/posts` as `api v1 posts`:
+/// the punctuation, which is the most telling part of an injection payload and
+/// the whole structure of a path, never arrived. Measured on NHA's
+/// prompt-injection test split, that train/serve skew cost about 14 points of F1
+/// (0.819 → 0.937, recall 0.782 → 0.945, missed attacks 12 → 3).
+///
+/// The pipeline below reproduces HuggingFace exactly:
+/// clean text → spaces around CJK → split on whitespace → lowercase + strip
+/// accents (NFD, drop Mn) → split on punctuation → WordPiece greedy
+/// longest-match → `[CLS]` … `[SEP]` → pad.
+///
+/// Parity is pinned by `tests/fixtures/bert_tokenizer_golden.json`, whose ids come
+/// from HuggingFace itself: if either side of the port drifts, a test fails
+/// instead of detection quality dropping in silence.
 pub struct WordPieceTokenizer {
     vocab: HashMap<String, i64>,
     max_length: usize,
+    unk_id: i64,
+    cls_id: i64,
+    sep_id: i64,
 }
 
 impl WordPieceTokenizer {
     /// Load vocabulary from a `vocab.txt` file (one token per line, line number = token ID).
     pub fn new(vocab_path: &str, max_length: usize) -> Result<Self, SentinelError> {
+        if max_length < 2 {
+            return Err(SentinelError::Configuration(
+                "max_length must leave room for [CLS] and [SEP]".to_string(),
+            ));
+        }
+
         let path = Path::new(vocab_path);
         if !path.exists() {
             return Err(SentinelError::Configuration(format!(
@@ -55,13 +197,25 @@ impl WordPieceTokenizer {
             ))
         })?;
 
-        let mut vocab = HashMap::with_capacity(32_000);
-        for (idx, line) in content.lines().enumerate() {
-            let token = line.trim();
+        // Line number = token id. Only the line ending is stripped — `trim()` would
+        // corrupt any token that legitimately carries surrounding characters — and
+        // the first entry wins on a duplicate.
+        let mut vocab: HashMap<String, i64> = HashMap::with_capacity(32_000);
+        for (idx, line) in content.split('\n').enumerate() {
+            let token = line.strip_suffix('\r').unwrap_or(line);
             if !token.is_empty() {
-                vocab.insert(token.to_string(), idx as i64);
+                vocab.entry(token.to_string()).or_insert(idx as i64);
             }
         }
+
+        let special = |name: &str| -> Result<i64, SentinelError> {
+            vocab.get(name).copied().ok_or_else(|| {
+                SentinelError::Configuration(format!("Vocab {} is missing {}", vocab_path, name))
+            })
+        };
+        let unk_id = special("[UNK]")?;
+        let cls_id = special("[CLS]")?;
+        let sep_id = special("[SEP]")?;
 
         tracing::info!(
             vocab_size = vocab.len(),
@@ -69,86 +223,66 @@ impl WordPieceTokenizer {
             "WordPieceTokenizer loaded"
         );
 
-        Ok(Self { vocab, max_length })
+        Ok(Self {
+            vocab,
+            max_length,
+            unk_id,
+            cls_id,
+            sep_id,
+        })
+    }
+
+    /// Greedy longest-match-first WordPiece over one basic token.
+    fn wordpiece(&self, word: &str) -> Vec<i64> {
+        let chars: Vec<char> = word.chars().collect();
+        if chars.len() > MAX_INPUT_CHARS_PER_WORD {
+            return vec![self.unk_id];
+        }
+
+        let mut pieces = Vec::new();
+        let mut start = 0;
+        while start < chars.len() {
+            let mut end = chars.len();
+            let mut matched: Option<i64> = None;
+            while start < end {
+                let piece: String = chars[start..end].iter().collect();
+                let candidate = if start == 0 { piece } else { format!("##{}", piece) };
+                if let Some(&id) = self.vocab.get(&candidate) {
+                    matched = Some(id);
+                    break;
+                }
+                end -= 1;
+            }
+            match matched {
+                Some(id) => {
+                    pieces.push(id);
+                    start = end;
+                }
+                // A single unmatched piece makes the WHOLE word unknown. The
+                // previous loop advanced one character and kept going, emitting
+                // partial pieces for a word WordPiece considers unknown.
+                None => return vec![self.unk_id],
+            }
+        }
+        pieces
     }
 
     /// Encode text into `(input_ids, attention_mask)` — both `Vec<i64>` of length `max_length`.
-    ///
-    /// Algorithm (matches Node.js `SimpleTokenizer.encode()`):
-    /// 1. Lowercase + replace non-alphanumeric with space
-    /// 2. Split whitespace into words
-    /// 3. Per word: full-word vocab lookup → WordPiece `##subword` fallback → `[UNK]`
-    /// 4. Prepend `[CLS]` (101), append `[SEP]` (102)
-    /// 5. Pad with `[PAD]` (0) to `max_length`
     pub fn encode(&self, text: &str) -> (Vec<i64>, Vec<i64>) {
-        // Normalize: lowercase, replace non-alphanumeric with space
-        let normalized: String = text
-            .to_lowercase()
-            .chars()
-            .map(|c| {
-                if c.is_ascii_alphanumeric() || c.is_whitespace() {
-                    c
-                } else {
-                    ' '
-                }
-            })
-            .collect();
-
+        let body_limit = self.max_length - 2;
         let mut token_ids: Vec<i64> = Vec::with_capacity(self.max_length);
-        token_ids.push(CLS_TOKEN_ID);
+        token_ids.push(self.cls_id);
 
-        for word in normalized.split_whitespace() {
-            if token_ids.len() >= self.max_length - 1 {
-                break; // Reserve space for [SEP]
-            }
-
-            // Try full word lookup first
-            if let Some(&id) = self.vocab.get(word) {
+        'words: for word in basic_tokenize(text) {
+            for id in self.wordpiece(&word) {
+                if token_ids.len() - 1 >= body_limit {
+                    break 'words;
+                }
                 token_ids.push(id);
-                continue;
-            }
-
-            // WordPiece subword tokenization
-            let chars: Vec<char> = word.chars().collect();
-            let mut start = 0;
-            let mut found_any = false;
-
-            while start < chars.len() {
-                if token_ids.len() >= self.max_length - 1 {
-                    break;
-                }
-
-                let mut end = chars.len();
-                let mut matched = false;
-
-                while start < end {
-                    let substr: String = if start == 0 {
-                        chars[start..end].iter().collect()
-                    } else {
-                        format!("##{}", chars[start..end].iter().collect::<String>())
-                    };
-
-                    if let Some(&id) = self.vocab.get(&substr) {
-                        token_ids.push(id);
-                        start = end;
-                        matched = true;
-                        found_any = true;
-                        break;
-                    }
-                    end -= 1;
-                }
-
-                if !matched {
-                    start += 1;
-                }
-            }
-
-            if !found_any {
-                token_ids.push(UNK_TOKEN_ID);
             }
         }
 
-        token_ids.push(SEP_TOKEN_ID);
+        token_ids.push(self.sep_id);
 
         // Attention mask: 1 for real tokens, 0 for padding
         let real_len = token_ids.len();
@@ -929,6 +1063,151 @@ fn softmax(logits: &[f32]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Cargo runs a crate's tests as parallel threads of ONE process, so a path
+    /// keyed on the pid alone is a single shared file for the whole suite and the
+    /// tests delete it from under each other. The counter gives each call its own.
+    fn temp_file(name: &str, contents: &[u8]) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "sentinel-waf-ml-{}-{}-{}",
+            std::process::id(),
+            seq,
+            name
+        ));
+        std::fs::write(&path, contents).unwrap();
+        path
+    }
+
+    /// The tokenizer must reproduce the ids the models were TRAINED with: these
+    /// come from HuggingFace itself (DistilBertTokenizer over the same vocab.txt).
+    /// Without this test the port silently drifts and costs detection quality —
+    /// which is exactly what the previous SimpleTokenizer-derived version did.
+    #[test]
+    fn bert_tokenizer_matches_huggingface_golden() {
+        let fixtures = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures");
+        let fixture: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(format!("{}/bert_tokenizer_golden.json", fixtures)).unwrap(),
+        )
+        .unwrap();
+
+        let max_length = fixture["max_length"].as_u64().unwrap() as usize;
+        let tokenizer =
+            WordPieceTokenizer::new(&format!("{}/vocab.txt", fixtures), max_length).unwrap();
+
+        for case in fixture["cases"].as_array().unwrap() {
+            let text = case["text"].as_str().unwrap();
+            let (ids, mask) = tokenizer.encode(text);
+            let expected_ids: Vec<i64> = case["input_ids"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            let expected_mask: Vec<i64> = case["attention_mask"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_i64().unwrap())
+                .collect();
+            assert_eq!(ids, expected_ids, "input_ids mismatch for {:?}", text);
+            assert_eq!(mask, expected_mask, "attention_mask mismatch for {:?}", text);
+        }
+    }
+
+    /// The payload shape the previous tokenizer destroyed.
+    #[test]
+    fn basic_tokenize_keeps_punctuation_as_separate_tokens() {
+        assert_eq!(
+            basic_tokenize("<script>alert(1)</script>"),
+            vec!["<", "script", ">", "alert", "(", "1", ")", "<", "/", "script", ">"]
+        );
+    }
+
+    /// And the path structure it flattened: /api/v1/posts was becoming "api v1 posts".
+    #[test]
+    fn basic_tokenize_keeps_the_slashes_of_a_path() {
+        assert_eq!(
+            basic_tokenize("/api/v1/posts"),
+            vec!["/", "api", "/", "v1", "/", "posts"]
+        );
+    }
+
+    #[test]
+    fn basic_tokenize_lowercases_and_strips_accents() {
+        assert_eq!(basic_tokenize("Perché Città"), vec!["perche", "citta"]);
+    }
+
+    #[test]
+    fn basic_tokenize_splits_cjk_and_drops_invisible_characters() {
+        assert_eq!(basic_tokenize("你好世界"), vec!["你", "好", "世", "界"]);
+        // Zero-width space, BOM and soft hyphen are Format characters: deleted
+        assert_eq!(
+            basic_tokenize("zero\u{200B}width\u{FEFF} soft\u{00AD}hyphen"),
+            vec!["zerowidth", "softhyphen"]
+        );
+    }
+
+    fn fixture_tokenizer() -> (WordPieceTokenizer, std::path::PathBuf) {
+        // Minimal BERT vocab: the three special tokens are mandatory
+        let vocab_path = temp_file("slot-vocab.txt", b"[PAD]\n[UNK]\n[CLS]\n[SEP]\nhello\nworld");
+        let tokenizer = WordPieceTokenizer::new(vocab_path.to_str().unwrap(), 8).unwrap();
+        (tokenizer, vocab_path)
+    }
+
+    #[test]
+    fn word_longer_than_the_limit_is_a_single_unknown() {
+        let (tokenizer, vocab_path) = fixture_tokenizer();
+        let (ids, mask) = tokenizer.encode(&"a".repeat(MAX_INPUT_CHARS_PER_WORD + 1));
+
+        // [CLS] [UNK] [SEP] then padding
+        // SAFE-SLICE: ids is a Vec<i64>, not a &str — no UTF-8 boundary to hit —
+        // and encode() always pads to max_length (8 here), so [..3] is in range.
+        assert_eq!(&ids[..3], &[2, 1, 3]);
+        assert_eq!(mask.iter().sum::<i64>(), 3);
+
+        let _ = std::fs::remove_file(vocab_path);
+    }
+
+    /// An unmatched piece makes the whole word unknown — the previous loop emitted
+    /// partial pieces instead, so the model saw fragments of a word it never learned.
+    #[test]
+    fn a_word_with_an_unmatched_piece_is_entirely_unknown() {
+        let (tokenizer, vocab_path) = fixture_tokenizer();
+        let (ids, _) = tokenizer.encode("helloxyz");
+
+        // SAFE-SLICE: Vec<i64> padded to max_length by encode(), never a &str.
+        assert_eq!(&ids[..3], &[2, 1, 3], "expected [CLS] [UNK] [SEP]");
+
+        let _ = std::fs::remove_file(vocab_path);
+    }
+
+    #[test]
+    fn truncation_keeps_room_for_the_special_tokens() {
+        let (tokenizer, vocab_path) = fixture_tokenizer();
+        let (ids, mask) = tokenizer.encode("hello world hello world hello world");
+
+        assert_eq!(ids.len(), 8);
+        assert_eq!(ids[0], 2, "[CLS] first");
+        assert_eq!(ids[7], 3, "[SEP] last, never truncated away");
+        assert_eq!(mask.iter().sum::<i64>(), 8);
+
+        let _ = std::fs::remove_file(vocab_path);
+    }
+
+    /// Special token ids are no longer hardcoded to 100/101/102: a vocab without
+    /// them must be rejected at load instead of mislabelling every inference.
+    #[test]
+    fn vocab_without_special_tokens_is_rejected() {
+        let vocab_path = temp_file("bad-vocab.txt", b"hello\nworld");
+        let err = match WordPieceTokenizer::new(vocab_path.to_str().unwrap(), 8) {
+            Ok(_) => panic!("a vocab without [UNK]/[CLS]/[SEP] must be rejected"),
+            Err(e) => e,
+        };
+        assert!(err.to_string().contains("[UNK]"), "got: {}", err);
+        let _ = std::fs::remove_file(vocab_path);
+    }
 
     #[test]
     fn test_softmax_basic() {

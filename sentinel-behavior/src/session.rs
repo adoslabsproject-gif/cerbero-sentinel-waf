@@ -242,13 +242,20 @@ impl SessionAnalyzer {
         None
     }
 
-    /// Cleanup expired sessions
-    pub async fn cleanup(&self) {
+    /// Drop expired sessions, returning how many were removed.
+    ///
+    /// Sync, not async: the body is a single `retain` with nothing to await, and the
+    /// aggregated `BehavioralAnalysis::cleanup` that now calls it is sync. Until
+    /// 2026-10-01 nothing called this at all, so the session map grew for the life
+    /// of the process.
+    pub fn cleanup(&self) -> usize {
+        let before = self.sessions.len();
         let now = Instant::now();
         self.sessions.retain(|_, session| {
             now.duration_since(session.last_seen) < self.max_age
                 && now.duration_since(session.first_seen) < self.max_age
         });
+        before - self.sessions.len()
     }
 
     /// Get session count

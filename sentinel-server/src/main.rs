@@ -217,6 +217,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     })
                     .collect();
                 st.ledger_portal_client.send_anomaly_baselines(batch);
+
+                // SlaStore::cleanup_idle existed but was called only from its own
+                // test, so idle endpoint series accumulated for the life of the
+                // process. Same cadence and same state as the flush above, so it
+                // costs no extra task.
+                st.sla_store
+                    .cleanup_idle(std::time::Duration::from_secs(3600));
             }
         });
     }

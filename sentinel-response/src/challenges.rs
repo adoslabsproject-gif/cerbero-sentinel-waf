@@ -355,10 +355,17 @@ impl ChallengeGenerator {
         self.pending.len()
     }
 
-    /// Cleanup expired challenges
-    pub async fn cleanup(&self) {
+    /// Drop expired challenges, returning how many were removed.
+    ///
+    /// `verify` only removes the challenge it was asked about, so one that is
+    /// issued and never answered — the normal case for a scanner — stayed in
+    /// `pending` for the life of the process. Sync for the same reason as
+    /// `BanManager::cleanup`: nothing here awaits, and the caller is sync.
+    pub fn cleanup(&self) -> usize {
+        let before = self.pending.len();
         let now = Instant::now();
         self.pending.retain(|_, v| v.expires_at > now);
+        before - self.pending.len()
     }
 }
 

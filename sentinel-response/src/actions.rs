@@ -8,6 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+/// Most recent actions kept per IP. Past this the oldest half is dropped.
+const MAX_HISTORY_PER_IP: usize = 100;
+
 /// Result of action determination
 #[derive(Debug, Clone)]
 pub struct ActionResult {
@@ -75,17 +78,35 @@ impl ActionEngine {
             timestamp: Instant::now(),
         };
 
-        self.recent_actions
-            .entry(key)
-            .or_insert_with(Vec::new)
-            .push(entry);
+        // Trim ONLY the entry we just touched. The previous version walked the
+        // whole map on every single request — one lock per attacker IP ever seen —
+        // to prune a single vector: O(unique IPs) of work on the hot path.
+        let mut entries = self.recent_actions.entry(key).or_insert_with(Vec::new);
+        entries.push(entry);
+        if entries.len() > MAX_HISTORY_PER_IP {
+            entries.drain(0..MAX_HISTORY_PER_IP / 2);
+        }
+    }
 
-        // Trim old entries
-        self.recent_actions.iter_mut().for_each(|mut e| {
-            if e.value().len() > 100 {
-                e.value_mut().drain(0..50);
-            }
+    /// Forget the action history of IPs that have been quiet for `max_age`.
+    ///
+    /// `recent_actions` holds one key per IP and nothing ever removed them, so the
+    /// map grew for the whole life of the process. Returns how many IPs were
+    /// forgotten.
+    pub fn cleanup(&self, max_age: std::time::Duration) -> usize {
+        let before = self.recent_actions.len();
+        let now = Instant::now();
+        self.recent_actions.retain(|_, entries| match entries.last() {
+            Some(last) => now.duration_since(last.timestamp) < max_age,
+            // No entries left at all: nothing worth a key.
+            None => false,
         });
+        before - self.recent_actions.len()
+    }
+
+    /// How many IPs the action history currently holds.
+    pub fn tracked_ip_count(&self) -> usize {
+        self.recent_actions.len()
     }
 
     /// Get action history for an IP

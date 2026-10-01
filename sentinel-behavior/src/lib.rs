@@ -731,6 +731,24 @@ impl BehavioralAnalysis {
         self.identity_graph.cleanup();
         self.intent_detector.cleanup();
         self.layer3.cleanup();
+
+        // These three had a cleanup() that NOTHING ever called, so sessions, agent
+        // profiles and coordination clusters grew for the life of the process.
+        // Note that `session_path_analyzer` above is a DIFFERENT structure from
+        // `session_analyzer`: the near-identical names are what kept this hidden.
+        self.session_analyzer.cleanup();
+
+        // AgentProfiler filters on `created_at`, so this caps profile LIFETIME and
+        // not idleness: a short age would keep wiping the baseline of agents that
+        // are still active. 24 profile windows (24 h with the default 3600 s) keeps
+        // live baselines while still bounding the map.
+        self.profiler
+            .cleanup(std::time::Duration::from_secs(self.config.profile_window_secs * 24));
+
+        // A coordination cluster is by definition a burst inside one window, so the
+        // configured window IS the right age here (300 s by default).
+        self.coordination_detector
+            .cleanup(std::time::Duration::from_secs(self.config.coordination_window_secs));
         // F6: cap event_log to last 50k events (oldest evicted)
         if self.event_log.len() > 50_000 {
             let mut ids: Vec<u64> = self.event_log.iter().map(|e| *e.key()).collect();

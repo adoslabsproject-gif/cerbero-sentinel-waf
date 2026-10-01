@@ -18,7 +18,7 @@ use sentinel_core::{
 use sentinel_persistence::PortalClient;
 use std::sync::Arc;
 
-pub use actions::{ActionEngine, ActionResult};
+pub use actions::{ActionEngine, ActionEntry, ActionResult};
 pub use challenges::{ChallengeGenerator, ChallengeVerifier};
 pub use bans::{BanManager, BanEntry, BanReason};
 pub use escalation::{EscalationManager, EscalationLevel};
@@ -32,7 +32,50 @@ pub struct ResponseLayer {
     escalation_manager: Arc<EscalationManager>,
 }
 
+/// What one maintenance pass reclaimed from the response layer.
+#[derive(Debug, Clone, Default)]
+pub struct ResponseCleanupReport {
+    /// Expired challenges removed from the pending map
+    pub challenges_dropped: usize,
+    /// Challenges still pending afterwards
+    pub challenges_remaining: usize,
+    /// Expired ban entries removed (IP + agent)
+    pub bans_dropped: usize,
+    /// IPs whose action history was forgotten
+    pub ip_histories_dropped: usize,
+    /// IPs still tracked in the action history
+    pub ip_histories_remaining: usize,
+}
+
+impl ResponseCleanupReport {
+    /// True when the pass actually reclaimed something worth logging.
+    pub fn freed_anything(&self) -> bool {
+        self.challenges_dropped > 0 || self.bans_dropped > 0 || self.ip_histories_dropped > 0
+    }
+}
+
 impl ResponseLayer {
+    /// Drop expired challenges and bans, and the action history of quiet IPs.
+    ///
+    /// Every subsystem here had a `cleanup()` that nothing ever called — the
+    /// periodic maintenance only covered the behavioural layer — so unanswered
+    /// challenges, expired bans and one action-history key per attacker IP
+    /// accumulated until the process was restarted. Called by
+    /// `Sentinel::periodic_maintenance`.
+    pub fn cleanup(&self, history_max_age: std::time::Duration) -> ResponseCleanupReport {
+        let challenges_dropped = self.challenge_generator.cleanup();
+        let bans_dropped = self.ban_manager.cleanup();
+        let ip_histories_dropped = self.action_engine.cleanup(history_max_age);
+
+        ResponseCleanupReport {
+            challenges_dropped,
+            challenges_remaining: self.challenge_generator.pending_count(),
+            bans_dropped,
+            ip_histories_dropped,
+            ip_histories_remaining: self.action_engine.tracked_ip_count(),
+        }
+    }
+
     /// Create new response layer (NO persistence — legacy log-only).
     pub fn new(config: ResponseConfig) -> Result<Self, SentinelError> {
         Ok(Self {

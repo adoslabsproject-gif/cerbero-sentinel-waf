@@ -482,10 +482,16 @@ impl BanManager {
             .collect()
     }
 
-    /// Cleanup expired bans
-    pub async fn cleanup(&self) {
+    /// Drop expired bans, returning how many entries were removed.
+    ///
+    /// Sync, not async: the body is two `retain` calls with nothing to await, and
+    /// the periodic maintenance that calls it (`Sentinel::periodic_maintenance`)
+    /// is itself sync — as is the behavioural layer's own `cleanup`.
+    pub fn cleanup(&self) -> usize {
+        let before = self.ip_bans.len() + self.agent_bans.len();
         self.ip_bans.retain(|_, e| !e.is_expired());
         self.agent_bans.retain(|_, e| !e.is_expired());
+        before - (self.ip_bans.len() + self.agent_bans.len())
     }
 }
 

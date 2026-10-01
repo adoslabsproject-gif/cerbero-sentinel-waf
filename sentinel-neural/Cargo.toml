@@ -20,6 +20,10 @@ subtle = "2"
 ort = { workspace = true }
 ndarray = { workspace = true }
 parking_lot = { workspace = true }
+# BERT tokenization: NFD for accent stripping, Unicode categories for the
+# control/whitespace/punctuation rules HuggingFace applies (see ml/mod.rs)
+unicode-normalization = "0.1"
+unicode-general-category = "1.1"
 
 [dev-dependencies]
 tokio-test = { workspace = true }
