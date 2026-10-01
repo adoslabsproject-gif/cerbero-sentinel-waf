@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn rule3_no_referer_no_trigger() {
         let r = Layer3Rules::new();
-        assert!(r.record_referer(ip(1), None, "/api/v1/admin/users", "flowforge.automazionezeli.com").is_none());
+        assert!(r.record_referer(ip(1), None, "/api/v1/admin/users", "app.example.com").is_none());
     }
 
     #[test]
@@ -617,9 +617,9 @@ mod tests {
         let r = Layer3Rules::new();
         assert!(r.record_referer(
             ip(1),
-            Some("https://flowforge.automazionezeli.com/dashboard"),
+            Some("https://app.example.com/dashboard"),
             "/api/v1/account",
-            "flowforge.automazionezeli.com",
+            "app.example.com",
         ).is_none());
     }
 
@@ -630,7 +630,7 @@ mod tests {
             ip(1),
             Some("https://www.google.com/search?q=flowforge"),
             "/api/v1/auth/login",
-            "flowforge.automazionezeli.com",
+            "app.example.com",
         ).is_none());
     }
 
@@ -642,7 +642,7 @@ mod tests {
             ip(1),
             Some("https://acme-blog.com/saas-list"),
             "/signup",
-            "flowforge.automazionezeli.com",
+            "app.example.com",
         ).is_none());
     }
 
@@ -653,7 +653,7 @@ mod tests {
             ip(1),
             Some("https://attacker.com/page"),
             "/api/v1/admin/users",
-            "flowforge.automazionezeli.com",
+            "app.example.com",
         );
         let d = det.expect("external→deep API should trigger");
         assert_eq!(d.rule_id, "behavioral.fake_referer");

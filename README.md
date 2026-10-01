@@ -14,6 +14,8 @@ A full WAF in front of any web app or API — rate limiting, IP reputation, GeoI
 
 **Rust · 2–15 ms latency · single binary · zero runtime dependencies**
 
+<img src="assets/cerbero-pipeline.svg" alt="A request travelling through Cerbero's four layers: Edge Shield, Neural Defense, Behavioral, Response — while an attack is stopped at layer 2" width="100%">
+
 Created by **Nicola Cucurachi** — [nothumanallowed.com](https://nothumanallowed.com)
 
 </div>
@@ -84,16 +86,16 @@ cargo build --release
 
 ```bash
 # Default: listens on 127.0.0.1:8080
-./target/release/sentinel-server
+./target/release/sentinel
 
 # Custom port
-SENTINEL_PORT=9090 ./target/release/sentinel-server
+SENTINEL_PORT=9090 ./target/release/sentinel
 
 # Debug logging
-SENTINEL_LOG_LEVEL=debug ./target/release/sentinel-server
+SENTINEL_LOG_LEVEL=debug ./target/release/sentinel
 
 # With ML models
-SENTINEL_MODELS_PATH=/path/to/models ./target/release/sentinel-server
+SENTINEL_MODELS_PATH=/path/to/models ./target/release/sentinel
 ```
 
 ### Docker
@@ -212,13 +214,13 @@ Cerbero outputs structured JSON logs to stdout. Use `jq` to parse:
 
 ```bash
 # All blocked requests
-./target/release/sentinel-server 2>&1 | jq 'select(.fields.message == "Security escalation")'
+./target/release/sentinel 2>&1 | jq 'select(.fields.message == "Security escalation")'
 
 # High severity events
-./target/release/sentinel-server 2>&1 | jq 'select(.level == "WARN" or .level == "ERROR")'
+./target/release/sentinel 2>&1 | jq 'select(.level == "WARN" or .level == "ERROR")'
 
 # Banned IPs
-./target/release/sentinel-server 2>&1 | jq 'select(.fields.message == "IP banned")'
+./target/release/sentinel 2>&1 | jq 'select(.fields.message == "IP banned")'
 
 # From log file
 cat sentinel.log | jq 'select(.fields.message == "Security escalation") | {ip: .fields.ip, path: .fields.path, score: .fields.score, flags: .fields.flags}'
@@ -287,25 +289,43 @@ Out of the box, Cerbero uses regex patterns and heuristics for detection. This c
 
 For higher accuracy and fewer false positives, you can add ONNX models:
 
-- **Prompt Injection**: DeBERTa-v3-small fine-tuned (~65MB)
+- **Prompt Injection**: transformer classifier fine-tuned for injection detection (~65MB)
 - **Toxicity**: Binary classifier (~65MB)
 - **LLM Output Safety**: Detects compromised model responses (~65MB)
 - **Embeddings**: all-MiniLM-L6-v2 for semantic similarity (~87MB)
-- **Vocabulary**: WordPiece tokenizer (`vocab.txt`)
+- **Vocabulary**: the `vocab.txt` **of the model you are loading** — see below, this one matters
 
 Place models in a directory and set `SENTINEL_MODELS_PATH`:
 
 ```bash
 mkdir -p models
-# Download models from Hugging Face:
-#   - prompt-injection: https://huggingface.co/protectai/deberta-v3-base-prompt-injection-v2 (export to ONNX)
+# Download models from Hugging Face and export to ONNX:
+#   - prompt-injection: any ONNX text classifier trained for injection detection
 #   - toxicity: any ONNX binary text classifier
-#   - vocab.txt: from any BERT/DeBERTa tokenizer
+#   - vocab.txt: MUST be the vocabulary that model was trained with
 
 SENTINEL_MODELS_PATH=./models ./target/release/sentinel
 ```
 
-When models are found, Cerbero logs `"ONNX model loaded"` at startup. When not found, it logs a warning and falls back to pattern-based detection — no crash, no error.
+When models are found, Cerbero logs `"ONNX model loaded"` with the file's sha256. When not found, it logs a warning and falls back to pattern-based detection — no crash, no error.
+
+### The tokenizer has to match the training one — exactly
+
+This is the single easiest way to silently lose detection quality, so Cerbero makes it a tested property rather than a hope.
+
+A classifier is trained on a particular tokenization. Feed it a *different* one at serving time and it still answers confidently — it has simply never seen the input distribution you are giving it. The usual way this happens is a "simplified" tokenizer that strips punctuation: `<script>alert(1)</script>` arrives as `script alert 1 script`, and `/api/v1/posts` as `api v1 posts`. The punctuation is the most telling part of an injection payload, and the slashes *are* the structure of a path.
+
+<img src="assets/cerbero-tokenizer-parity.svg" alt="The same payload tokenized two ways: the simplified tokenizer yields 4 tokens with the punctuation gone, the BERT WordPiece tokenizer yields 11 and keeps it" width="100%">
+
+Cerbero's `WordPieceTokenizer` reproduces HuggingFace's `BertTokenizer(do_lower_case=True)`: clean text → spaces around CJK → whitespace split → lowercase + accent stripping (NFD, drop `Mn`) → punctuation split → greedy longest-match WordPiece (100 chars per word max) → `[CLS] … [SEP]` → pad. `[UNK]`, `[CLS]` and `[SEP]` are read **from your vocabulary**, not hardcoded: a vocab that lacks them is rejected at load instead of mislabelling every inference.
+
+Parity is pinned by a golden fixture, `sentinel-neural/tests/fixtures/bert_tokenizer_golden.json` — 24 cases whose ids come from HuggingFace itself, with the md5 of the vocabulary they were produced from. The test `bert_tokenizer_matches_huggingface_golden` asserts them, so a change in either direction fails a test instead of quietly costing accuracy:
+
+```bash
+cargo test -p sentinel-neural bert_tokenizer_matches_huggingface_golden
+```
+
+If you swap in a model family whose tokenizer is not BERT WordPiece (SentencePiece, BPE), the tokenizer must be replaced too — and the fixture regenerated from *that* tokenizer. Never regenerate the expected ids with Cerbero itself: the fixture is only worth something because it comes from outside the implementation under test.
 
 ## Honeypot System
 
@@ -377,6 +397,23 @@ cerbero-sentinel-waf/
 | Block (prompt injection) | 3.2ms | 8.5ms | 4,000 req/s |
 | Honeypot trap | 0.1ms | 0.3ms | 50,000 req/s |
 | Full pipeline (all layers) | 5.1ms | 12.3ms | 2,500 req/s |
+
+### Memory is bounded, not hoped-for
+
+A WAF keeps per-attacker state, and per-attacker state is where memory leaks live: every map keyed by IP, session or agent is a separate growth path that an attacker controls. In Cerbero every one of them has an eviction, and the eviction is *called* — not merely defined:
+
+| State | Bound |
+|---|---|
+| Pending challenges | dropped on expiry |
+| Bans (IP + agent) | dropped on expiry |
+| Per-IP action history | capped per IP, and quiet IPs forgotten after 24 h |
+| Sessions | `session_max_age_secs` |
+| Agent profiles | 24 profile windows |
+| Coordination clusters | `coordination_window_secs` |
+| Per-endpoint rate windows | swept on expiry |
+| SLA series | idle series dropped after 1 h |
+
+`Sentinel::periodic_maintenance` runs them on a fixed interval and logs what each pass reclaimed, so the bound is observable in production rather than assumed.
 
 ## License
 

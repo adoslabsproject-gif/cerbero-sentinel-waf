@@ -251,7 +251,7 @@ pub fn tenant_key_from_host(host: Option<&str>) -> String {
     let h = h.trim().to_ascii_lowercase();
     let h = h.split(':').next().unwrap_or(&h); // strip :port
     // Primo label come slug del tenant, MA solo se è un subdomain (≥3 label) — un apex
-    // come "automazionezeli.com" non è un tenant → bucket globale.
+    // come "example.com" non è un tenant → bucket globale.
     let labels: Vec<&str> = h.split('.').filter(|s| !s.is_empty()).collect();
     if labels.len() >= 3 {
         let slug = labels[0];
@@ -463,9 +463,9 @@ mod tests {
     // ── tenant_key_from_host: parsing/edge-case ──────────────────────────────
     #[test]
     fn host_parsing_extracts_slug_else_global() {
-        assert_eq!(tenant_key_from_host(Some("acme.app.automazionezeli.com")), "acme");
+        assert_eq!(tenant_key_from_host(Some("acme.app.example.net")), "acme");
         assert_eq!(tenant_key_from_host(Some("ACME.APP.example.com:443")), "acme"); // lowercase + strip port
-        assert_eq!(tenant_key_from_host(Some("automazionezeli.com")), GLOBAL_BUCKET); // apex (2 label)
+        assert_eq!(tenant_key_from_host(Some("example.com")), GLOBAL_BUCKET); // apex (2 label)
         assert_eq!(tenant_key_from_host(Some("www.example.com")), GLOBAL_BUCKET); // www non è tenant
         assert_eq!(tenant_key_from_host(None), GLOBAL_BUCKET);
         assert_eq!(tenant_key_from_host(Some("")), GLOBAL_BUCKET);
